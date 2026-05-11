@@ -1,5 +1,4 @@
 import json
-import os
 import time
 import uuid
 import logging
@@ -11,8 +10,12 @@ logger = logging.getLogger("proxy-to-codex")
 
 # ── Config ──────────────────────────────────────────────────
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-def get_api_key() -> str:
-    return os.environ.get("DEEPSEEK_API_KEY", "")
+
+_api_key: str = ""
+
+def set_api_key(key: str) -> None:
+    global _api_key
+    _api_key = key
 
 MODEL_MAP = {
     "gpt-5.4": "deepseek-v4-pro",
@@ -704,7 +707,7 @@ def create_app() -> FastAPI:
                     continue
 
                 headers = {
-                    "Authorization": f"Bearer {get_api_key()}",
+                    "Authorization": f"Bearer {_api_key}",
                     "Content-Type": "application/json",
                 }
 
@@ -854,7 +857,7 @@ def create_app() -> FastAPI:
         chat_body.pop("stream_options", None)
 
         headers = {
-            "Authorization": f"Bearer {get_api_key()}",
+            "Authorization": f"Bearer {_api_key}",
             "Content-Type": "application/json",
         }
 
@@ -924,7 +927,7 @@ def create_app() -> FastAPI:
         body_j["model"] = MODEL_MAP.get(model, DEFAULT_MODEL)
 
         headers = {
-            "Authorization": f"Bearer {get_api_key()}",
+            "Authorization": f"Bearer {_api_key}",
             "Content-Type": "application/json",
         }
 

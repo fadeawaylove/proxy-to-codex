@@ -21,7 +21,7 @@ from codex_config import (
     apply as apply_codex_config,
     restore,
 )
-from server import create_app
+from server import create_app, set_api_key
 
 # ── Log file path ───────────────────────────────────────────
 def _log_file_path() -> Path:
@@ -88,8 +88,8 @@ class ProxyGUI:
         self.server_running = False
         self._config_backup_path: Path | None = None
 
-        self.port_var = tk.IntVar(value=int(os.environ.get("PROXY_PORT", str(DEFAULT_PORT))))
-        self.api_key_var = tk.StringVar(value=os.environ.get("DEEPSEEK_API_KEY", ""))
+        self.port_var = tk.IntVar(value=DEFAULT_PORT)
+        self.api_key_var = tk.StringVar(value="")
 
         self.config_path = get_config_path()
 
@@ -245,7 +245,7 @@ class ProxyGUI:
             messagebox.showerror("错误", "请输入 DeepSeek API 密钥。")
             return
 
-        os.environ["DEEPSEEK_API_KEY"] = api_key
+        set_api_key(api_key)
 
         self._auto_config_apply()
 
