@@ -4,7 +4,6 @@
 .DESCRIPTION
     Checks for uncommitted changes, commits them, then bumps version
     (patch/minor/major), updates pyproject.toml, tags, and pushes.
-    Opens the GitHub Releases page on completion.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -74,12 +73,21 @@ uv run python -c "import sys; v=sys.argv[1].lstrip('v'); mj,mn,p=v.split('.'); m
 Write-Host "Bumping ${current} -> ${new_tag}" -ForegroundColor Green
 
 # ── Release notes ──────────────────────────────────────────
-Write-Host "`nEnter release notes (press Enter on an empty line to finish):" -ForegroundColor Yellow
+Write-Host "`nEnter release notes (end a line with `$ to finish, or leave blank to skip):" -ForegroundColor Yellow
 $lines = @()
 while ($true) {
     $line = Read-Host
-    if ($line -eq "") { break }
+    if ($line -eq "") {
+        # empty first line means skip
+        if ($lines.Count -eq 0) { break }
+    }
     $lines += $line
+    if ($line.EndsWith('$')) {
+        # remove the trailing $ from the last line
+        $lines[-1] = $line.Substring(0, $line.Length - 1)
+        if ($lines[-1] -eq "") { $lines = $lines[0..($lines.Count - 2)] }
+        break
+    }
 }
 $notes = $lines -join "`n"
 
