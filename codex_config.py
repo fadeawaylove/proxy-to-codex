@@ -1,8 +1,9 @@
 import os
-import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+
+import tomlkit
 
 
 def get_config_path() -> Path:
@@ -57,28 +58,20 @@ def read_config(config_path: Path) -> str:
 
 def apply(port: int, config_path: Path) -> bool:
     """Set Codex proxy URL to http://localhost:{port}/v1 in config.toml.
-    Creates the config if it doesn't exist. Returns True on success.
+
+    Uses tomlkit to preserve formatting, comments, and section order.
+    Returns True on success.
     """
     new_url = f"http://localhost:{port}/v1"
     ensure_config_dir(config_path)
 
     content = read_config(config_path)
+    doc = tomlkit.parse(content) if content else tomlkit.document()
 
-    if "[api]" in content:
-        # Replace existing base_url under [api] section
-        content = re.sub(
-            r"(?<=\[api\][^\[]*?)base_url\s*=\s*[^\n]*",
-            f'base_url = "{new_url}"',
-            content,
-            flags=re.DOTALL,
-        )
-    else:
-        # Append [api] section
-        if content and not content.endswith("\n"):
-            content += "\n"
-        content += f'\n[api]\nbase_url = "{new_url}"\n'
+    doc["openai_base_url"] = new_url
+    doc["allow_insecure"] = True
 
-    config_path.write_text(content, encoding="utf-8")
+    config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
     return True
 
 

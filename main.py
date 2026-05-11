@@ -2,10 +2,11 @@ import json
 import os
 import queue
 import sys
+import subprocess
 import threading
 import logging
+from logging.handlers import RotatingFileHandler
 import traceback
-from datetime import datetime
 from pathlib import Path
 from tkinter import ttk
 import tkinter as tk
@@ -16,14 +17,36 @@ import uvicorn
 from codex_config import (
     get_config_path,
     backup,
-    list_backups,
     read_config,
     apply as apply_codex_config,
-    restore_latest,
+    restore,
 )
 from server import create_app
 
-# ── Log capture ─────────────────────────────────────────────
+# ── Log file path ───────────────────────────────────────────
+def _log_file_path() -> Path:
+    appdata = os.environ.get("APPDATA", str(Path.home()))
+    log_dir = Path(appdata) / "proxy-to-codex" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "proxy.log"
+
+LOG_FILE = _log_file_path()
+
+# ── File logging (DEBUG) ────────────────────────────────────
+file_handler = RotatingFileHandler(
+    str(LOG_FILE), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+)
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+
+root_logger = logging.getLogger()
+root_logger.addHandler(file_handler)
+root_logger.setLevel(logging.DEBUG)
+
+# ── GUI log capture (INFO) ──────────────────────────────────
 log_queue: queue.Queue[str] = queue.Queue()
 
 
@@ -34,14 +57,12 @@ class QueueHandler(logging.Handler):
 
 
 queue_handler = QueueHandler()
-queue_handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s",
-                                             datefmt="%H:%M:%S"))
+queue_handler.setFormatter(logging.Formatter(
+    "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s", datefmt="%H:%M:%S"))
+queue_handler.setLevel(logging.INFO)
 
-root_logger = logging.getLogger()
 root_logger.addHandler(queue_handler)
-root_logger.setLevel(logging.INFO)
 
-# Also capture uvicorn logs
 for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
     uvicorn_logger = logging.getLogger(name)
     uvicorn_logger.addHandler(queue_handler)
@@ -49,21 +70,25 @@ for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
 
 logger = logging.getLogger("proxy-to-codex.gui")
 
+# ── Default port ────────────────────────────────────────────
+DEFAULT_PORT = 43214
+
 
 # ── GUI Application ─────────────────────────────────────────
 class ProxyGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Proxy to Codex")
+        self.root.title("Codex 代理管理")
         self.root.resizable(True, True)
-        self.root.minsize(600, 480)
-        self.root.geometry("700x580")
+        self.root.minsize(620, 480)
+        self.root.geometry("720x560")
 
         self.server_thread: threading.Thread | None = None
         self.server_instance: uvicorn.Server | None = None
         self.server_running = False
+        self._config_backup_path: Path | None = None
 
-        self.port_var = tk.IntVar(value=int(os.environ.get("PROXY_PORT", "4000")))
+        self.port_var = tk.IntVar(value=int(os.environ.get("PROXY_PORT", str(DEFAULT_PORT))))
         self.api_key_var = tk.StringVar(value=os.environ.get("DEEPSEEK_API_KEY", ""))
 
         self.config_path = get_config_path()
@@ -79,15 +104,15 @@ class ProxyGUI:
     def _build_ui(self):
         pad = {"padx": 10, "pady": 4}
 
-        # Row 0 — Server settings
-        settings_frame = ttk.LabelFrame(self.root, text="Server Settings")
+        # Row 0 — 服务器设置
+        settings_frame = ttk.LabelFrame(self.root, text="服务器设置")
         settings_frame.pack(fill=tk.X, **pad)
 
-        ttk.Label(settings_frame, text="Port:").grid(row=0, column=0, sticky=tk.W, **pad)
+        ttk.Label(settings_frame, text="端口:").grid(row=0, column=0, sticky=tk.W, **pad)
         self.port_entry = ttk.Entry(settings_frame, textvariable=self.port_var, width=8)
         self.port_entry.grid(row=0, column=1, sticky=tk.W, **pad)
 
-        ttk.Label(settings_frame, text="DeepSeek API Key:").grid(row=0, column=2, sticky=tk.W, **pad)
+        ttk.Label(settings_frame, text="DeepSeek API 密钥:").grid(row=0, column=2, sticky=tk.W, **pad)
         self.key_entry = ttk.Entry(settings_frame, textvariable=self.api_key_var, width=40, show="*")
         self.key_entry.grid(row=0, column=3, sticky=tk.EW, **pad)
 
@@ -95,13 +120,13 @@ class ProxyGUI:
         ctrl_frame = ttk.Frame(self.root)
         ctrl_frame.pack(fill=tk.X, **pad)
 
-        self.start_btn = ttk.Button(ctrl_frame, text="Start Server", command=self._start_server)
+        self.start_btn = ttk.Button(ctrl_frame, text="启动服务器", command=self._start_server)
         self.start_btn.pack(side=tk.LEFT, **pad)
 
-        self.stop_btn = ttk.Button(ctrl_frame, text="Stop Server", command=self._stop_server, state=tk.DISABLED)
+        self.stop_btn = ttk.Button(ctrl_frame, text="停止服务器", command=self._stop_server, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, **pad)
 
-        self.status_var = tk.StringVar(value="●  Stopped")
+        self.status_var = tk.StringVar(value="●  已停止")
         self.status_label = ttk.Label(ctrl_frame, textvariable=self.status_var, foreground="gray")
         self.status_label.pack(side=tk.LEFT, **pad)
 
@@ -109,31 +134,33 @@ class ProxyGUI:
         url_label = ttk.Label(ctrl_frame, textvariable=self.url_var, foreground="blue", cursor="hand2")
         url_label.pack(side=tk.RIGHT, **pad)
 
-        # Row 2 — Codex Config
-        codex_frame = ttk.LabelFrame(self.root, text="Codex Configuration")
+        # Row 2 — Codex 配置
+        codex_frame = ttk.LabelFrame(self.root, text="Codex 配置")
         codex_frame.pack(fill=tk.X, **pad)
 
         self.config_path_var = tk.StringVar()
-        ttk.Label(codex_frame, text="Config:").grid(row=0, column=0, sticky=tk.W, **pad)
+        ttk.Label(codex_frame, text="配置文件:").grid(row=0, column=0, sticky=tk.W, **pad)
         ttk.Label(codex_frame, textvariable=self.config_path_var, foreground="gray").grid(
-            row=0, column=1, columnspan=3, sticky=tk.W, **pad)
+            row=0, column=1, columnspan=2, sticky=tk.W, **pad)
 
-        self.config_status_var = tk.StringVar(value="(checking...)")
-        ttk.Label(codex_frame, text="Status:").grid(row=1, column=0, sticky=tk.W, **pad)
+        self.config_status_var = tk.StringVar(value="(检查中…)")
+        ttk.Label(codex_frame, text="状态:").grid(row=1, column=0, sticky=tk.W, **pad)
         ttk.Label(codex_frame, textvariable=self.config_status_var).grid(
-            row=1, column=1, columnspan=3, sticky=tk.W, **pad)
+            row=1, column=1, columnspan=2, sticky=tk.W, **pad)
 
-        self.backup_btn = ttk.Button(codex_frame, text="Backup Config", command=self._backup_config)
-        self.backup_btn.grid(row=2, column=0, **pad)
+        self.view_config_btn = ttk.Button(codex_frame, text="查看配置", command=self._view_config)
+        self.view_config_btn.grid(row=2, column=0, **pad)
 
-        self.apply_btn = ttk.Button(codex_frame, text="Auto-Configure Codex", command=self._apply_config)
-        self.apply_btn.grid(row=2, column=1, **pad)
+        # Row 3 — 日志
+        log_header = ttk.Frame(self.root)
+        log_header.pack(fill=tk.X, padx=10, pady=(4, 0))
+        ttk.Label(log_header, text="日志", font=("", 9, "bold")).pack(side=tk.LEFT)
+        self.log_path_var = tk.StringVar(value=f"({LOG_FILE})")
+        ttk.Label(log_header, textvariable=self.log_path_var, foreground="gray",
+                  font=("", 8)).pack(side=tk.LEFT, padx=6)
+        ttk.Button(log_header, text="清空日志", command=self._clear_log).pack(side=tk.RIGHT)
 
-        self.restore_btn = ttk.Button(codex_frame, text="Restore Backup", command=self._restore_config)
-        self.restore_btn.grid(row=2, column=2, **pad)
-
-        # Row 3 — Log output
-        log_frame = ttk.LabelFrame(self.root, text="Log")
+        log_frame = ttk.Frame(self.root)
         log_frame.pack(fill=tk.BOTH, expand=True, **pad)
 
         self.log_widget = scrolledtext.ScrolledText(
@@ -143,7 +170,6 @@ class ProxyGUI:
         )
         self.log_widget.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-        # Configure text tags for different log levels
         self.log_widget.tag_config("ERROR", foreground="#f44747")
         self.log_widget.tag_config("WARNING", foreground="#e5c07b")
         self.log_widget.tag_config("INFO", foreground="#d4d4d4")
@@ -155,16 +181,15 @@ class ProxyGUI:
     # ── Log polling ──────────────────────────────────────────
 
     def _poll_logs(self):
-        """Poll the log queue and insert messages into the log widget."""
         while True:
             try:
                 msg = log_queue.get_nowait()
             except queue.Empty:
                 break
 
-            if "ERROR" in msg or "error" in msg:
+            if " ERROR " in msg or "ERROR" in msg.split("  ")[:2]:
                 tag = "ERROR"
-            elif "WARNING" in msg:
+            elif " WARNING " in msg:
                 tag = "WARNING"
             else:
                 tag = "INFO"
@@ -178,15 +203,51 @@ class ProxyGUI:
 
     # ── Server control ───────────────────────────────────────
 
+    def _auto_config_apply(self):
+        """Backup current config, then apply proxy config. Track backup for later restore."""
+        try:
+            self._config_backup_path = backup(self.config_path)
+        except Exception as e:
+            logger.error(f"配置备份异常: {e}\n{traceback.format_exc()}")
+            self._config_backup_path = None
+        if self._config_backup_path:
+            logger.info(f"配置已自动备份到: {self._config_backup_path}")
+        port = self.port_var.get()
+        apply_codex_config(port, self.config_path)
+        logger.info(f"Codex 配置已自动设为 http://localhost:{port}/v1")
+        self._refresh_config_status()
+
+    def _auto_config_restore(self):
+        """Restore config from the backup created on start, if any."""
+        if not self._config_backup_path:
+            return
+        if not self._config_backup_path.exists():
+            logger.warning(f"备份文件已不存在: {self._config_backup_path}")
+            self._config_backup_path = None
+            return
+        try:
+            success = restore(self._config_backup_path, self.config_path)
+            if success:
+                logger.info(f"配置已自动还原自: {self._config_backup_path}")
+            else:
+                logger.warning(f"配置还原失败: {self._config_backup_path}")
+        except Exception as e:
+            logger.error(f"配置还原异常: {e}\n{traceback.format_exc()}")
+        finally:
+            self._config_backup_path = None
+            self._refresh_config_status()
+
     def _start_server(self):
         port = self.port_var.get()
         api_key = self.api_key_var.get().strip()
 
         if not api_key:
-            messagebox.showerror("Error", "DeepSeek API Key is required.")
+            messagebox.showerror("错误", "请输入 DeepSeek API 密钥。")
             return
 
         os.environ["DEEPSEEK_API_KEY"] = api_key
+
+        self._auto_config_apply()
 
         self.start_btn.configure(state=tk.DISABLED)
         self.port_entry.configure(state=tk.DISABLED)
@@ -198,12 +259,12 @@ class ProxyGUI:
         self.server_thread.start()
         self.server_running = True
 
-        self.status_var.set("●  Running")
+        self.status_var.set("●  运行中")
         self.status_label.configure(foreground="green")
         self.url_var.set(f"http://localhost:{port}")
         self.stop_btn.configure(state=tk.NORMAL)
 
-        logger.info(f"Server starting on port {port}...")
+        logger.info(f"服务器在端口 {port} 启动中…")
 
     def _run_server(self, port: int):
         try:
@@ -212,12 +273,12 @@ class ProxyGUI:
             self.server_instance = uvicorn.Server(config)
             self.server_instance.run()
         except Exception:
-            logger.error(f"Server crashed:\n{traceback.format_exc()}")
+            logger.error(f"服务器崩溃:\n{traceback.format_exc()}")
 
     def _stop_server(self):
         if self.server_instance:
             self.server_instance.should_exit = True
-            logger.info("Server stopping...")
+            logger.info("服务器停止中…")
 
         if self.server_thread and self.server_thread.is_alive():
             self.server_thread.join(timeout=3)
@@ -226,7 +287,9 @@ class ProxyGUI:
         self.server_instance = None
         self.server_thread = None
 
-        self.status_var.set("●  Stopped")
+        self._auto_config_restore()
+
+        self.status_var.set("●  已停止")
         self.status_label.configure(foreground="gray")
         self.url_var.set("")
         self.stop_btn.configure(state=tk.DISABLED)
@@ -234,75 +297,51 @@ class ProxyGUI:
         self.port_entry.configure(state=tk.NORMAL)
         self.key_entry.configure(state=tk.NORMAL)
 
-        logger.info("Server stopped.")
+        logger.info("服务器已停止。")
 
-    # ── Codex config management ──────────────────────────────
+    # ── Codex config ─────────────────────────────────────────
 
     def _refresh_config_status(self):
         self.config_path_var.set(str(self.config_path))
         if self.config_path.exists():
             content = read_config(self.config_path)
             if "localhost" in content:
-                self.config_status_var.set("Configured for proxy")
+                self.config_status_var.set("已配置本地代理")
             else:
-                self.config_status_var.set("Default (OpenAI API)")
-            self.backup_btn.configure(state=tk.NORMAL)
-            self.apply_btn.configure(state=tk.NORMAL)
+                self.config_status_var.set("默认 (OpenAI API)")
+            self.view_config_btn.configure(state=tk.NORMAL)
         else:
-            self.config_status_var.set("No config file found")
-            self.backup_btn.configure(state=tk.DISABLED)
+            self.config_status_var.set("未找到配置文件")
+            self.view_config_btn.configure(state=tk.DISABLED)
 
-        backups = list_backups(self.config_path)
-        self.restore_btn.configure(
-            state=tk.NORMAL if backups else tk.DISABLED
-        )
-
-    def _backup_config(self):
-        result = backup(self.config_path)
-        if result:
-            messagebox.showinfo("Backup", f"Config backed up to:\n{result}")
-            logger.info(f"Config backed up to: {result}")
-        else:
-            messagebox.showwarning("Backup", "No config file found to backup.")
-        self._refresh_config_status()
-
-    def _apply_config(self):
-        port = self.port_var.get()
-        # Auto-backup before applying
-        backup(self.config_path)
-        apply_codex_config(port, self.config_path)
-        logger.info(f"Codex config set to http://localhost:{port}/v1")
-        messagebox.showinfo(
-            "Configured",
-            f"Codex config updated.\nProxy URL: http://localhost:{port}/v1\n\nOld config was backed up automatically.",
-        )
-        self._refresh_config_status()
-
-    def _restore_config(self):
-        result = restore_latest(self.config_path)
-        if result:
-            logger.info(f"Config restored from: {result}")
-            messagebox.showinfo("Restored", f"Config restored from:\n{result}")
-        else:
-            messagebox.showwarning("Restore", "No backup found.")
-        self._refresh_config_status()
+    def _view_config(self):
+        """Open the config file with the system default editor."""
+        try:
+            os.startfile(str(self.config_path))
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开配置文件:\n{e}")
 
     # ── Cleanup ──────────────────────────────────────────────
 
     def _on_close(self):
         if self.server_running:
-            if messagebox.askyesno("Exit", "Server is running. Stop and exit?"):
+            if messagebox.askyesno("退出确认", "服务器正在运行，确定要停止并退出吗？"):
                 self._stop_server()
                 self.root.destroy()
         else:
             self.root.destroy()
+
+    def _clear_log(self):
+        self.log_widget.configure(state=tk.NORMAL)
+        self.log_widget.delete("1.0", tk.END)
+        self.log_widget.configure(state=tk.DISABLED)
+        logger.debug("日志窗口已清空")
 
 
 # ── Main entry ──────────────────────────────────────────────
 def main():
     root = tk.Tk()
 
-    # Set theme if available
     style = ttk.Style()
     try:
         available = style.theme_names()
@@ -316,7 +355,7 @@ def main():
     try:
         app = ProxyGUI(root)
     except Exception:
-        messagebox.showerror("Fatal Error", f"Failed to start GUI:\n{traceback.format_exc()}")
+        messagebox.showerror("致命错误", f"GUI 启动失败:\n{traceback.format_exc()}")
         sys.exit(1)
 
     root.mainloop()
