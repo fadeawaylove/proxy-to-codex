@@ -71,14 +71,7 @@ switch ($choice) {
 Write-Host "`nBump level: $level" -ForegroundColor Cyan
 uv run python -c "import sys; v=sys.argv[1].lstrip('v'); mj,mn,p=v.split('.'); mj,mn,p=int(mj),int(mn),int(p); level=sys.argv[2]; exec({'patch':'p+=1','minor':'mn+=1;p=0','major':'mj+=1;mn=0;p=0'}[level]); print(f'v{mj}.{mn}.{p}')" $current $level | ForEach-Object { $new_tag = $_ }
 
-Write-Host "New version:     $new_tag" -ForegroundColor Green
-
-# ── Confirm ────────────────────────────────────────────────
-$confirm = Read-Host "`nProceed with ${new_tag}? (y/N)"
-if ($confirm -notmatch '^[yY]') {
-    Write-Host "Aborted." -ForegroundColor Red
-    Pop-Location; Pop-Location; exit 0
-}
+Write-Host "Bumping ${current} -> ${new_tag}" -ForegroundColor Green
 
 # ── Release notes ──────────────────────────────────────────
 Write-Host "`nEnter release notes (press Enter twice to finish, or leave blank for auto-generated):" -ForegroundColor Yellow
