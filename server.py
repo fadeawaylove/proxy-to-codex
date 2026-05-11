@@ -549,7 +549,12 @@ def translate_sse_chunk_to_ws_events(sse_data: dict, state: dict, meta: dict) ->
 
 def build_assistant_from_state(state: dict) -> dict:
     accumulated_text = state.get("accumulated_text", "")
+    accumulated_reasoning = state.get("accumulated_reasoning", "")
     tool_call_states = state.get("tool_call_states", {})
+
+    msg: dict = {"role": "assistant", "content": accumulated_text or None}
+    if accumulated_reasoning:
+        msg["reasoning_content"] = accumulated_reasoning
 
     if tool_call_states:
         tool_calls = []
@@ -563,13 +568,9 @@ def build_assistant_from_state(state: dict) -> dict:
                     "arguments": tc["arguments"],
                 },
             })
-        return {
-            "role": "assistant",
-            "content": accumulated_text or None,
-            "tool_calls": tool_calls,
-        }
-    else:
-        return {"role": "assistant", "content": accumulated_text}
+        msg["tool_calls"] = tool_calls
+
+    return msg
 
 
 # ── Chat response → Responses API translation ───────────────
