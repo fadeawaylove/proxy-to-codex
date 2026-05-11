@@ -191,7 +191,6 @@ def translate_response_create_to_chat(body: dict) -> tuple[dict, str, dict]:
         "model": ds_model,
         "messages": messages,
         "stream": True,
-        "stream_options": {"include_usage": True},
     }
 
     if tools:
@@ -718,6 +717,14 @@ def create_app() -> FastAPI:
                         ) as resp:
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
+                                error_body = error_text.decode(errors="replace")[:1000]
+                                logger.error(
+                                    f"DeepSeek {resp.status_code}: {error_body}\n"
+                                    f"  → model={chat_body.get('model')}, "
+                                    f"msgs={len(chat_body.get('messages', []))}, "
+                                    f"stream={chat_body.get('stream')}, "
+                                    f"keys={list(chat_body.keys())}"
+                                )
                                 await ws.send_text(json.dumps({
                                     "type": "response.failed",
                                     "response": {
@@ -727,7 +734,7 @@ def create_app() -> FastAPI:
                                     },
                                     "error": {
                                         "code": "upstream_error",
-                                        "message": f"DeepSeek returned {resp.status_code}: {error_text.decode()[:500]}",
+                                        "message": f"DeepSeek returned {resp.status_code}: {error_body}",
                                     },
                                 }))
                                 continue
@@ -858,8 +865,13 @@ def create_app() -> FastAPI:
                     json=chat_body,
                 )
                 if resp.status_code != 200:
-                    error_text = resp.text[:500]
-                    logger.error(f"DeepSeek returned {resp.status_code}: {error_text}")
+                    error_text = resp.text[:1000]
+                    logger.error(
+                        f"DeepSeek HTTP {resp.status_code}: {error_text}\n"
+                        f"  → model={chat_body.get('model')}, "
+                        f"msgs={len(chat_body.get('messages', []))}, "
+                        f"keys={list(chat_body.keys())}"
+                    )
                     return JSONResponse(
                         status_code=502,
                         content={
