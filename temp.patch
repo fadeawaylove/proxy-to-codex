@@ -1,0 +1,27 @@
+@@ -113,13 +113,16 @@
+     def _set_window_icon(self):
+-        # In PyInstaller onefile, the icon is embedded via --icon, no manual set needed
+-        if getattr(sys, "frozen", False):
+-            return
+-        icon_dir = Path(__file__).parent
+-        ico_path = icon_dir / "icon.ico"
+-        png_path = icon_dir / "icon.png"
+         try:
+-            if os.name == "nt" and ico_path.exists():
+-                self.root.iconbitmap(str(ico_path))
+-            elif png_path.exists():
+-                self.root.iconphoto(True, tk.PhotoImage(file=str(png_path)))
++            if getattr(sys, "frozen", False):
++                # In PyInstaller onefile, use the exe's own embedded icon resource
++                if os.name == "nt":
++                    self.root.iconbitmap(sys.executable)
++            else:
++                icon_dir = Path(__file__).parent
++                ico_path = icon_dir / "icon.ico"
++                png_path = icon_dir / "icon.png"
++                if os.name == "nt" and ico_path.exists():
++                    self.root.iconbitmap(str(ico_path))
++                elif png_path.exists():
++                    self.root.iconphoto(True, tk.PhotoImage(file=str(png_path)))
+         except Exception:
+             pass
