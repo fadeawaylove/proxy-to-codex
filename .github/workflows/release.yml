@@ -31,11 +31,8 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Install PyInstaller
-        run: uv pip install pyinstaller
-
       - name: Build executable
-        run: pyinstaller --onefile --windowed --icon=icon.ico --name proxy-to-codex main.py
+        run: uv run pyinstaller --onefile --windowed --icon=icon.ico --name proxy-to-codex main.py
 
       - name: Rename artifact with version
         shell: pwsh
