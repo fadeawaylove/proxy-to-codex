@@ -2,8 +2,9 @@
 .SYNOPSIS
     Interactive release publishing script for proxy-to-codex.
 .DESCRIPTION
-    Bumps the version (patch/minor/major), updates pyproject.toml,
-    commits, tags, and pushes. Opens the GitHub Releases page on completion.
+    Checks for uncommitted changes, commits them, then bumps version
+    (patch/minor/major), updates pyproject.toml, tags, and pushes.
+    Opens the GitHub Releases page on completion.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,32 @@ Push-Location (Split-Path -Parent $PSCommandPath)
 Push-Location ..
 
 $repo = "fadeawaylove/proxy-to-codex"
+
+# ── Check for uncommitted changes ──────────────────────────
+$status = git status --porcelain 2>$null
+if ($status) {
+    Write-Host "`nUncommitted changes detected:" -ForegroundColor Yellow
+    git status --short
+    Write-Host ""
+
+    $commit_msg = Read-Host "Enter commit message (or leave blank to skip committing)"
+    if ($commit_msg) {
+        Write-Host "`nStaging all changes..." -ForegroundColor Cyan
+        git add -A
+
+        Write-Host "Committing..." -ForegroundColor Cyan
+        git commit -m $commit_msg
+
+        Write-Host "`nPushing to origin..." -ForegroundColor Cyan
+        git push origin master
+
+        Write-Host "Changes committed and pushed." -ForegroundColor Green
+    } else {
+        Write-Host "Skipping commit — proceeding with release anyway." -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "Working tree clean." -ForegroundColor Green
+}
 
 # ── Get current version ────────────────────────────────────
 $tags = git tag -l "v*" --sort=-v:refname 2>$null
@@ -88,7 +115,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ── Git operations ─────────────────────────────────────────
-Write-Host "`nCommitting and tagging..." -ForegroundColor Yellow
+Write-Host "`nCommitting version bump and tagging..." -ForegroundColor Yellow
 
 git add pyproject.toml
 $commit_msg = "Bump version to ${new_tag}"
