@@ -11,7 +11,8 @@ logger = logging.getLogger("proxy-to-codex")
 
 # ── Config ──────────────────────────────────────────────────
 DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+def get_api_key() -> str:
+    return os.environ.get("DEEPSEEK_API_KEY", "")
 
 MODEL_MAP = {
     "gpt-5.4": "deepseek-v4-pro",
@@ -703,7 +704,7 @@ def create_app() -> FastAPI:
                     continue
 
                 headers = {
-                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Authorization": f"Bearer {get_api_key()}",
                     "Content-Type": "application/json",
                 }
 
@@ -770,10 +771,44 @@ def create_app() -> FastAPI:
     @app.post("/v1/responses")
     async def responses_http(request: Request):
         """HTTP POST handler for when WebSocket is unavailable."""
-        body = await request.json()
+        raw_body = await request.body()
+
+        if not raw_body:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "invalid_request", "message": "Empty body"}},
+            )
+
+        # Decode body: try UTF-8 first, then common fallbacks
+        body_text = None
+        content_type = request.headers.get("content-type", "")
+        for encoding in ("utf-8", "utf-8-sig", "gbk", "gb2312", "gb18030", "latin-1"):
+            try:
+                body_text = raw_body.decode(encoding)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+
+        if body_text is None:
+            logger.error(
+                f"Cannot decode request body (first 32 bytes): {raw_body[:32].hex()}"
+            )
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "invalid_request", "message": "Cannot decode request body"}},
+            )
+
+        try:
+            body = json.loads(body_text)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON body (first 200 chars): {body_text[:200]}")
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "invalid_request", "message": f"Invalid JSON: {str(e)}"}},
+            )
 
         # Accept both wrapped (response.create) and unwrapped requests
-        if body.get("type") == "response.create":
+        if isinstance(body, dict) and body.get("type") == "response.create":
             inner = dict(body)
         else:
             inner = body
@@ -811,7 +846,7 @@ def create_app() -> FastAPI:
         chat_body.pop("stream_options", None)
 
         headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {get_api_key()}",
             "Content-Type": "application/json",
         }
 
@@ -876,7 +911,7 @@ def create_app() -> FastAPI:
         body_j["model"] = MODEL_MAP.get(model, DEFAULT_MODEL)
 
         headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {get_api_key()}",
             "Content-Type": "application/json",
         }
 
