@@ -111,21 +111,21 @@ class ProxyGUI:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _set_window_icon(self):
-        # In PyInstaller onefile, the icon is embedded via --icon, no manual set needed
-        if getattr(sys, "frozen", False):
-            return
-        icon_dir = Path(__file__).parent
-        ico_path = icon_dir / "icon.ico"
-        png_path = icon_dir / "icon.png"
         try:
-            if os.name == "nt" and ico_path.exists():
-                self.root.iconbitmap(str(ico_path))
-            elif png_path.exists():
-                self.root.iconphoto(True, tk.PhotoImage(file=str(png_path)))
+            if getattr(sys, "frozen", False):
+                if os.name == "nt":
+                    # Use the icon resource embedded in the exe by --icon
+                    self.root.iconbitmap(sys.executable)
+            else:
+                icon_dir = Path(__file__).parent
+                ico_path = icon_dir / "icon.ico"
+                png_path = icon_dir / "icon.png"
+                if os.name == "nt" and ico_path.exists():
+                    self.root.iconbitmap(str(ico_path))
+                elif png_path.exists():
+                    self.root.iconphoto(True, tk.PhotoImage(file=str(png_path)))
         except Exception:
             pass
-
-    # ── UI construction ──────────────────────────────────────
 
     def _build_ui(self):
         pad = {"padx": 10, "pady": 4}
