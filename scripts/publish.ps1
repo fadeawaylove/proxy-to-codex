@@ -74,20 +74,14 @@ uv run python -c "import sys; v=sys.argv[1].lstrip('v'); mj,mn,p=v.split('.'); m
 Write-Host "Bumping ${current} -> ${new_tag}" -ForegroundColor Green
 
 # ── Release notes ──────────────────────────────────────────
-Write-Host "`nEnter release notes (press Enter twice to finish, or leave blank for auto-generated):" -ForegroundColor Yellow
+Write-Host "`nEnter release notes (press Enter on an empty line to finish):" -ForegroundColor Yellow
 $lines = @()
 while ($true) {
     $line = Read-Host
-    if ($line -eq "") {
-        if ($lines.Count -gt 0 -and $lines[-1] -eq "") { break }
-    }
+    if ($line -eq "") { break }
     $lines += $line
 }
-while ($lines.Count -gt 0 -and $lines[-1] -eq "") {
-    $lines = $lines[0..($lines.Count - 2)]
-}
 $notes = $lines -join "`n"
-if ($lines.Count -eq 1 -and $lines[0] -eq "") { $notes = "" }
 
 if ($notes) {
     Write-Host "`nRelease notes preview:" -ForegroundColor Cyan
@@ -136,8 +130,6 @@ Write-Host "  Release:  ${release_url}" -ForegroundColor Cyan
 Write-Host "  Actions:  ${actions_url}" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  The .exe will be built by GitHub Actions and attached to the release."
-
-try { Start-Process $release_url } catch { }
 
 Pop-Location
 Pop-Location
