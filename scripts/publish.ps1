@@ -47,7 +47,7 @@ uv run python -c "import sys; v=sys.argv[1].lstrip('v'); mj,mn,p=v.split('.'); m
 Write-Host "New version:     $new_tag" -ForegroundColor Green
 
 # ── Confirm ────────────────────────────────────────────────
-$confirm = Read-Host "`nProceed with $new_tag? (y/N)"
+$confirm = Read-Host "`nProceed with ${new_tag}? (y/N)"
 if ($confirm -notmatch '^[yY]') {
     Write-Host "Aborted." -ForegroundColor Red
     Pop-Location; Pop-Location; exit 0
@@ -91,7 +91,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "`nCommitting and tagging..." -ForegroundColor Yellow
 
 git add pyproject.toml
-$commit_msg = "Bump version to $new_tag"
+$commit_msg = "Bump version to ${new_tag}"
 git commit -m $commit_msg
 
 if ($notes) {
@@ -104,16 +104,16 @@ Write-Host "`nPushing to origin..." -ForegroundColor Yellow
 git push origin master --follow-tags
 
 # ── Done ───────────────────────────────────────────────────
-$release_url = "https://github.com/$repo/releases/tag/$new_tag"
-$actions_url = "https://github.com/$repo/actions"
+$release_url = "https://github.com/${repo}/releases/tag/${new_tag}"
+$actions_url = "https://github.com/${repo}/actions"
 
 Write-Host ""
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
-Write-Host "  Published: $new_tag" -ForegroundColor Green
+Write-Host "  Published: ${new_tag}" -ForegroundColor Green
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Release:  $release_url" -ForegroundColor Cyan
-Write-Host "  Actions:  $actions_url" -ForegroundColor Cyan
+Write-Host "  Release:  ${release_url}" -ForegroundColor Cyan
+Write-Host "  Actions:  ${actions_url}" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  The .exe will be built by GitHub Actions and attached to the release."
 
