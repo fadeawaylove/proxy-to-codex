@@ -28,6 +28,13 @@ def ensure_config_dir(config_path: Path) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _prune_backups(config_path: Path, keep: int) -> None:
+    """Keep only the `keep` most recent backup files."""
+    all_backups = list_backups(config_path)
+    for stale in all_backups[keep:]:
+        stale.unlink(missing_ok=True)
+
+
 def backup(config_path: Path) -> Path | None:
     """Create a timestamped backup of the config file. Returns backup path or None."""
     if not config_path.exists():
@@ -35,6 +42,7 @@ def backup(config_path: Path) -> Path | None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = config_path.with_suffix(f".toml.backup.{timestamp}")
     shutil.copy2(config_path, backup_path)
+    _prune_backups(config_path, keep=10)
     return backup_path
 
 
