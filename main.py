@@ -32,6 +32,14 @@ def _log_file_path() -> Path:
 
 LOG_FILE = _log_file_path()
 
+def _settings_dir() -> Path:
+    appdata = os.environ.get("APPDATA", str(Path.home()))
+    d = Path(appdata) / "proxy-to-codex"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+SETTINGS_FILE = _settings_dir() / "settings.json"
+
 # ── File logging (DEBUG) ────────────────────────────────────
 file_handler = RotatingFileHandler(
     str(LOG_FILE), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
@@ -90,6 +98,7 @@ class ProxyGUI:
 
         self.port_var = tk.IntVar(value=DEFAULT_PORT)
         self.api_key_var = tk.StringVar(value="")
+        self._load_settings()
 
         self.config_path = get_config_path()
 
@@ -237,6 +246,28 @@ class ProxyGUI:
             self._config_backup_path = None
             self._refresh_config_status()
 
+    def _load_settings(self):
+        """Load persisted API key and port from settings.json."""
+        try:
+            if SETTINGS_FILE.exists():
+                data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+                if data.get("api_key"):
+                    self.api_key_var.set(data["api_key"])
+                if data.get("port"):
+                    self.port_var.set(data["port"])
+        except Exception:
+            pass
+
+    def _save_settings(self):
+        """Persist API key and port to settings.json."""
+        try:
+            SETTINGS_FILE.write_text(
+                json.dumps({"api_key": self.api_key_var.get(), "port": self.port_var.get()}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"保存设置失败: {e}")
+
     def _start_server(self):
         port = self.port_var.get()
         api_key = self.api_key_var.get().strip()
@@ -246,6 +277,8 @@ class ProxyGUI:
             return
 
         set_api_key(api_key)
+
+        self._save_settings()
 
         self._auto_config_apply()
 
