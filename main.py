@@ -106,7 +106,6 @@ class ProxyGUI:
 
         self.port_var = tk.IntVar(value=DEFAULT_PORT)
         self.api_key_var = tk.StringVar(value="")
-        self._check_updates = True
         self._load_settings()
 
         self.config_path = get_config_path()
@@ -117,12 +116,11 @@ class ProxyGUI:
         self._windows_enabled = False
 
         self._build_ui()
-        self._scan_wsl()
+        threading.Thread(target=self._scan_wsl, daemon=True).start()
         self._poll_logs()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         atexit.register(self._cleanup_on_exit)
-        self.root.after(500, self._check_update)
 
     def _set_window_icon(self):
         try:
@@ -229,11 +227,8 @@ class ProxyGUI:
         self.log_path_var = tk.StringVar(value=f"({LOG_FILE})")
         ttk.Label(log_header, textvariable=self.log_path_var, foreground="gray",
                   font=("", 8)).pack(side=tk.LEFT, padx=6)
-        self.update_check_var = tk.BooleanVar(value=self._check_updates)
-        self.update_check_cb = ttk.Checkbutton(
-            log_header, text="检查更新", variable=self.update_check_var,
-            command=self._toggle_update_check)
-        self.update_check_cb.pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(log_header, text="检查更新", command=self._check_update).pack(
+            side=tk.RIGHT, padx=(0, 6))
         ttk.Button(log_header, text="清空日志", command=self._clear_log).pack(side=tk.RIGHT)
 
         log_frame = ttk.Frame(self.root)
@@ -350,8 +345,6 @@ class ProxyGUI:
                     self.api_key_var.set(data["api_key"])
                 if data.get("port"):
                     self.port_var.set(data["port"])
-                if "check_updates" in data:
-                    self._check_updates = data["check_updates"]
         except Exception:
             pass
 
@@ -359,7 +352,7 @@ class ProxyGUI:
         """Persist API key and port to settings.json."""
         try:
             SETTINGS_FILE.write_text(
-                json.dumps({"api_key": self.api_key_var.get(), "port": self.port_var.get(), "check_updates": self._check_updates}, indent=2),
+                json.dumps({"api_key": self.api_key_var.get(), "port": self.port_var.get()}, indent=2),
                 encoding="utf-8",
             )
         except Exception as e:
@@ -510,8 +503,12 @@ class ProxyGUI:
     # ── WSL config management ────────────────────────────────
 
     def _scan_wsl(self):
-        """Detect WSL Codex configs and update UI."""
+        """Detect WSL Codex configs in background, then update UI on main thread."""
         self._wsl_configs = find_wsl_configs()
+        self.root.after(0, self._update_wsl_ui_after_scan)
+
+    def _update_wsl_ui_after_scan(self):
+        """Update WSL-related UI elements after background scan completes."""
         if self._wsl_configs:
             paths = [str(c["config_path"]) for c in self._wsl_configs]
             self.wsl_path_var.set(" | ".join(paths))
@@ -618,14 +615,7 @@ class ProxyGUI:
 
     # ── Update check ─────────────────────────────────────────
 
-    def _toggle_update_check(self):
-        self._check_updates = self.update_check_var.get()
-        self._save_settings()
-
     def _check_update(self):
-        """Check GitHub Releases for a newer version in background."""
-        if not self._check_updates:
-            return
         threading.Thread(target=self._check_update_thread, daemon=True).start()
 
     def _check_update_thread(self):
@@ -650,27 +640,107 @@ class ProxyGUI:
             latest_parts = tuple(int(x) for x in latest.split(".") if x.isdigit())
             current_parts = tuple(int(x) for x in current.split(".") if x.isdigit())
             if latest_parts > current_parts:
+                download_url = None
+                filename = None
+                for asset in data.get("assets", []):
+                    name = asset.get("name", "")
+                    if "setup" in name.lower() and name.endswith(".exe"):
+                        download_url = asset.get("browser_download_url")
+                        filename = name
+                        break
                 logger.info(f"New version available: v{latest} (current: v{current})")
-                self.root.after(0, lambda: self._show_update_notification(latest))
+                self.root.after(0, lambda: self._prompt_download(latest, download_url, filename))
         except Exception:
             pass
 
-    def _show_update_notification(self, latest: str):
-        release_url = f"https://github.com/fadeawaylove/proxy-to-codex/releases/tag/v{latest}"
-        sep = "\u2500" * 60
-        log_msg = (
-            f"{sep}\n"
-            f"   New version available: v{latest}\n"
-            f"   Download: {release_url}\n"
-            f"{sep}"
-        )
-        self.log_widget.configure(state=tk.NORMAL)
-        self.log_widget.insert("1.0", log_msg + "\n", "WARNING")
-        self.log_widget.configure(state=tk.DISABLED)
-        messagebox.showinfo(
+    def _prompt_download(self, latest: str, download_url: str | None, filename: str | None):
+        if not download_url:
+            release_url = f"https://github.com/fadeawaylove/proxy-to-codex/releases/tag/v{latest}"
+            messagebox.showinfo(
+                "\u53d1\u73b0\u65b0\u7248\u672c",
+                f"\u65b0\u7248\u672c v{latest} \u5df2\u53d1\u5e03\uff01\n\n\u4e0b\u8f7d\u5730\u5740\uff1a\n{release_url}",
+            )
+            return
+        if messagebox.askyesno(
             "\u53d1\u73b0\u65b0\u7248\u672c",
-            f"\u65b0\u7248\u672c v{latest} \u5df2\u53d1\u5e03\uff01\n\n\u4e0b\u8f7d\u5730\u5740\uff1a\n{release_url}"
+            f"\u65b0\u7248\u672c v{latest} \u5df2\u53d1\u5e03\uff01\n\n\u662f\u5426\u4e0b\u8f7d\u5e76\u5b89\u88c5\uff1f",
+        ):
+            self._download_and_install(download_url, filename)
+
+    def _download_and_install(self, url: str, filename: str):
+        import tempfile
+
+        dest = Path(tempfile.gettempdir()) / filename
+
+        progress_win = tk.Toplevel(self.root)
+        progress_win.title("\u4e0b\u8f7d\u66f4\u65b0")
+        progress_win.geometry("420x150")
+        progress_win.resizable(False, False)
+        progress_win.transient(self.root)
+        progress_win.grab_set()
+
+        ttk.Label(progress_win, text=f"\u6b63\u5728\u4e0b\u8f7d: {filename}").pack(padx=16, pady=(16, 8))
+
+        progress_var = tk.DoubleVar(value=0)
+        progress_bar = ttk.Progressbar(
+            progress_win, variable=progress_var, maximum=100, length=380
         )
+        progress_bar.pack(padx=16, pady=4)
+
+        percent_var = tk.StringVar(value="0%")
+        ttk.Label(progress_win, textvariable=percent_var).pack(pady=4)
+
+        def do_download():
+            try:
+                import urllib.request
+                import ssl
+
+                ctx = ssl.create_default_context()
+                req = urllib.request.Request(url, headers={"User-Agent": "proxy-to-codex"})
+                with urllib.request.urlopen(req, timeout=300, context=ctx) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(dest, "wb") as f:
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                pct = downloaded / total * 100
+                                progress_win.after(
+                                    0,
+                                    lambda p=pct: (
+                                        progress_var.set(p),
+                                        percent_var.set(f"{p:.0f}%"),
+                                    ),
+                                )
+                progress_win.after(0, on_done)
+            except Exception as e:
+                progress_win.after(0, lambda: on_error(str(e)))
+
+        def on_done():
+            percent_var.set("\u4e0b\u8f7d\u5b8c\u6210\uff0c\u6b63\u5728\u542f\u52a8\u5b89\u88c5\u7a0b\u5e8f\u2026")
+            progress_bar.configure(mode="indeterminate")
+            progress_bar.start()
+            logger.info(f"Downloaded {filename}, launching installer\u2026")
+            try:
+                subprocess.Popen([str(dest)])
+                progress_win.destroy()
+                self._on_close()
+            except Exception as e:
+                logger.error(f"Failed to launch installer: {e}")
+                messagebox.showerror("\u9519\u8bef", f"\u542f\u52a8\u5b89\u88c5\u7a0b\u5e8f\u5931\u8d25:\n{e}")
+                progress_win.destroy()
+
+        def on_error(msg: str):
+            logger.error(f"Download failed: {msg}")
+            messagebox.showerror("\u4e0b\u8f7d\u5931\u8d25", f"\u4e0b\u8f7d\u66f4\u65b0\u5931\u8d25:\n{msg}")
+            progress_win.destroy()
+
+        threading.Thread(target=do_download, daemon=True).start()
+
     def _clear_log(self):
         self.log_widget.configure(state=tk.NORMAL)
         self.log_widget.delete("1.0", tk.END)

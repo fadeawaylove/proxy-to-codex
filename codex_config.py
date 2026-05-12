@@ -7,6 +7,14 @@ from pathlib import Path
 import tomlkit
 
 
+def _run_hidden(args, timeout=10):
+    """Run a subprocess without creating a visible console window on Windows."""
+    kwargs = {"text": True, "timeout": timeout}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.check_output(args, **kwargs)
+
+
 def get_config_path() -> Path:
     """Detect and return the Codex config.toml path."""
     base = os.environ.get("CODEX_CONFIG_DIR", "")
@@ -104,11 +112,9 @@ def restore_latest(config_path: Path) -> Path | None:
 def get_wsl_host_ip(distro: str) -> str | None:
     """Return the Windows host IP visible from inside a WSL distro."""
     try:
-        output = subprocess.check_output(
+        output = _run_hidden(
             ["wsl", "-d", distro, "-e", "sh", "-c",
-             "ip route show default | awk '{print $3}'"],
-            text=True, timeout=10,
-        )
+             "ip route show default | awk '{print $3}'"])
         ip = output.strip()
         if ip:
             return ip
@@ -127,10 +133,7 @@ def find_wsl_configs() -> list[dict]:
 
     # 1. List WSL distros
     try:
-        output = subprocess.check_output(
-            ["wsl", "--list", "--quiet"],
-            text=True, timeout=10,
-        )
+        output = _run_hidden(["wsl", "--list", "--quiet"])
         output = output.replace("\x00", "")
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return results
@@ -140,10 +143,8 @@ def find_wsl_configs() -> list[dict]:
     # 2. For each distro, locate ~/.codex/config.toml
     for distro in distros:
         try:
-            home_output = subprocess.check_output(
-                ["wsl", "-d", distro, "-e", "sh", "-c", "echo $HOME"],
-                text=True, timeout=10,
-            )
+            home_output = _run_hidden(
+                ["wsl", "-d", distro, "-e", "sh", "-c", "echo $HOME"])
             home = home_output.strip()
             if not home or not home.startswith("/"):
                 continue
