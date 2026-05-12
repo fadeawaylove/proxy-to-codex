@@ -319,7 +319,16 @@ class ProxyGUI:
     def _run_server(self, port: int):
         try:
             app = create_app()
-            config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
+            # PyInstaller windowed apps on Windows may not have stdout/stderr.
+            # Uvicorn's default logging config expects a TTY-backed stream and can
+            # crash during formatter setup, so reuse the GUI/file handlers instead.
+            config = uvicorn.Config(
+                app,
+                host="0.0.0.0",
+                port=port,
+                log_level="info",
+                log_config=None,
+            )
             self.server_instance = uvicorn.Server(config)
             self.server_instance.run()
         except Exception:
