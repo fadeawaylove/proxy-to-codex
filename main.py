@@ -419,7 +419,7 @@ class ProxyGUI:
             logger.error(f"服务器崩溃:\n{traceback.format_exc()}")
 
     def _stop_server(self):
-        if self.server_instance:
+        if self.server_instance is not None:
             self.server_instance.should_exit = True
             logger.info("服务器停止中…")
 

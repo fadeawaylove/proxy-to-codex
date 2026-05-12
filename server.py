@@ -3,6 +3,7 @@ import time
 import uuid
 import logging
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTask
 from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
 
@@ -938,10 +939,20 @@ def create_app() -> FastAPI:
                 headers=headers, json=body_j,
             )
             resp = await client.send(req, stream=True)
+            if resp.status_code != 200:
+                error_body = await resp.aread()
+                await client.aclose()
+                error_text = error_body.decode(errors="replace")
+                logger.error(f"DeepSeek stream error {resp.status_code}: {error_text[:500]}")
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": {"message": f"Upstream error {resp.status_code}", "type": "upstream_error"}},
+                )
             return StreamingResponse(
                 resp.aiter_bytes(),
                 status_code=resp.status_code,
                 headers={"Content-Type": "text/event-stream"},
+                background=BackgroundTask(client.aclose),
             )
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
@@ -949,7 +960,15 @@ def create_app() -> FastAPI:
                 f"{DEEPSEEK_BASE}/chat/completions",
                 headers=headers, json=body_j,
             )
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+            if resp.status_code != 200:
+                error_text = resp.text[:500] if resp.text else "(empty)"
+                logger.error(f"DeepSeek error {resp.status_code}: {error_text}")
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": {"message": f"Upstream error {resp.status_code}", "type": "upstream_error"}},
+                )
+            chat_response = resp.json()
+        return JSONResponse(content=chat_response, status_code=resp.status_code)
 
     @app.get("/health")
     async def health():
