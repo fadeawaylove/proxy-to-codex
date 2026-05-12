@@ -19,21 +19,18 @@ if ($status) {
     git status --short
     Write-Host ""
 
-    $commit_msg = Read-Host "Enter commit message (or leave blank to skip committing)"
-    if ($commit_msg) {
-        Write-Host "`nStaging all changes..." -ForegroundColor Cyan
-        git add -A
+    $commit_msg = Read-Host "Enter commit message [chore: update]"
+    if (-not $commit_msg) { $commit_msg = "chore: update" }
+    Write-Host "`nStaging all changes..." -ForegroundColor Cyan
+    git add -A
 
-        Write-Host "Committing..." -ForegroundColor Cyan
-        git commit -m $commit_msg
+    Write-Host "Committing..." -ForegroundColor Cyan
+    git commit -m $commit_msg
 
-        Write-Host "`nPushing to origin..." -ForegroundColor Cyan
-        git push origin master
+    Write-Host "`nPushing to origin..." -ForegroundColor Cyan
+    git push origin master
 
-        Write-Host "Changes committed and pushed." -ForegroundColor Green
-    } else {
-        Write-Host "Skipping commit — proceeding with release anyway." -ForegroundColor DarkGray
-    }
+    Write-Host "Changes committed and pushed." -ForegroundColor Green
 } else {
     Write-Host "Working tree clean." -ForegroundColor Green
 }
@@ -55,7 +52,8 @@ Write-Host "  [1] patch   (bug fixes)"
 Write-Host "  [2] minor   (new features, backward-compatible)"
 Write-Host "  [3] major   (breaking changes)"
 
-$choice = Read-Host "`nChoice (1/2/3)"
+$choice = Read-Host "`nChoice (1/2/3) [1]"
+if (-not $choice) { $choice = "1" }
 switch ($choice) {
     "1" { $level = "patch" }
     "2" { $level = "minor" }
