@@ -25,7 +25,7 @@ from codex_config import (
     find_wsl_configs,
     get_wsl_host_ip,
 )
-from server import create_app, set_api_key
+from server import create_app, set_api_key, DEFAULT_MODEL_MAP, DEFAULT_BASE_URL
 
 try:
     from _version import __version__
@@ -102,10 +102,13 @@ class ProxyGUI:
         self.server_thread: threading.Thread | None = None
         self.server_instance: uvicorn.Server | None = None
         self.server_running = False
+        self._server_starting = False
         self._config_backup_path: Path | None = None
 
         self.port_var = tk.IntVar(value=DEFAULT_PORT)
         self.api_key_var = tk.StringVar(value="")
+        self.model_map: dict[str, str] = {}
+        self.base_url: str = DEFAULT_BASE_URL
         self._load_settings()
 
         self.config_path = get_config_path()
@@ -165,6 +168,10 @@ class ProxyGUI:
         self.status_var = tk.StringVar(value="●  已停止")
         self.status_label = ttk.Label(ctrl_frame, textvariable=self.status_var, foreground="gray")
         self.status_label.pack(side=tk.LEFT, **pad)
+
+        self.model_settings_btn = ttk.Button(
+            ctrl_frame, text="模型设置", command=self._open_model_settings)
+        self.model_settings_btn.pack(side=tk.LEFT, padx=(6, 0))
 
         self.url_var = tk.StringVar(value="")
         url_label = ttk.Label(ctrl_frame, textvariable=self.url_var, foreground="blue", cursor="hand2")
@@ -336,8 +343,98 @@ class ProxyGUI:
             self._windows_config_apply_internal()
         self._update_windows_toggle_state()
 
+    # ── Model settings popup ───────────────────────────────────
+
+    def _open_model_settings(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("模型设置")
+        dialog.resizable(True, True)
+        dialog.minsize(420, 240)
+        dialog.geometry("520x360")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Work with a copy; commit on OK
+        edit_map = dict(self.model_map)
+        rows: list[dict] = []
+
+        # Scrollable area
+        canvas = tk.Canvas(dialog, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        scroll_frame = ttk.Frame(canvas)
+        scroll_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _add_row(alias: str = "", ds_model: str = ""):
+            row_frame = ttk.Frame(scroll_frame)
+            row_frame.pack(fill=tk.X, pady=1)
+
+            alias_entry = ttk.Entry(row_frame, width=22)
+            alias_entry.insert(0, alias)
+            alias_entry.pack(side=tk.LEFT, padx=1)
+
+            ttk.Label(row_frame, text=" → ").pack(side=tk.LEFT)
+
+            model_entry = ttk.Entry(row_frame, width=30)
+            model_entry.insert(0, ds_model)
+            model_entry.pack(side=tk.LEFT, padx=1)
+
+            remove_btn = ttk.Button(
+                row_frame, text="✕", width=3,
+                command=lambda r=row_frame: _remove_row(r),
+            )
+            remove_btn.pack(side=tk.LEFT, padx=2)
+
+            rows.append({
+                "frame": row_frame,
+                "alias": alias_entry,
+                "model": model_entry,
+            })
+
+        def _remove_row(row_frame: ttk.Frame):
+            for i, r in enumerate(rows):
+                if r["frame"] is row_frame:
+                    r["frame"].destroy()
+                    del rows[i]
+                    break
+
+        # Populate from current edit_map
+        for alias, ds_model in edit_map.items():
+            _add_row(alias, ds_model)
+
+        # Buttons bar
+        btn_bar = ttk.Frame(dialog)
+        btn_bar.pack(fill=tk.X, padx=8, pady=(2, 6))
+
+        ttk.Button(btn_bar, text="+", width=3, command=_add_row).pack(side=tk.LEFT, padx=2)
+
+        def _on_ok():
+            new_map: dict[str, str] = {}
+            for r in rows:
+                a = r["alias"].get().strip()
+                m = r["model"].get().strip()
+                if a and m:
+                    new_map[a] = m
+            if new_map:
+                self.model_map = new_map
+            dialog.destroy()
+
+        ttk.Button(btn_bar, text="确定", command=_on_ok).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btn_bar, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+
     def _load_settings(self):
-        """Load persisted API key and port from settings.json."""
+        """Load persisted settings from settings.json."""
         try:
             if SETTINGS_FILE.exists():
                 data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -345,20 +442,33 @@ class ProxyGUI:
                     self.api_key_var.set(data["api_key"])
                 if data.get("port"):
                     self.port_var.set(data["port"])
+                if data.get("model_map") and isinstance(data["model_map"], dict):
+                    self.model_map = data["model_map"]
+                if data.get("base_url"):
+                    self.base_url = data["base_url"]
         except Exception:
             pass
+        if not self.model_map:
+            self.model_map = dict(DEFAULT_MODEL_MAP)
 
     def _save_settings(self):
-        """Persist API key and port to settings.json."""
+        """Persist settings to settings.json."""
         try:
             SETTINGS_FILE.write_text(
-                json.dumps({"api_key": self.api_key_var.get(), "port": self.port_var.get()}, indent=2),
+                json.dumps({
+                    "api_key": self.api_key_var.get(),
+                    "port": self.port_var.get(),
+                    "model_map": self.model_map,
+                    "base_url": self.base_url,
+                }, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
         except Exception as e:
             logger.warning(f"保存设置失败: {e}")
 
     def _toggle_server(self):
+        if self._server_starting:
+            return
         if self.server_running:
             self._stop_server()
         else:
@@ -376,29 +486,52 @@ class ProxyGUI:
 
         self._save_settings()
 
+        self._server_starting = True
         self.server_btn.configure(text="停止服务器")
         self.port_entry.configure(state=tk.DISABLED)
         self.key_entry.configure(state=tk.DISABLED)
+        self.model_settings_btn.configure(state=tk.DISABLED)
 
         self.server_thread = threading.Thread(
-            target=self._run_server, args=(port,), daemon=True
+            target=self._run_server, args=(port, self.model_map, self.base_url), daemon=True
         )
         self.server_thread.start()
-        self.server_running = True
 
-        self.status_var.set("●  运行中")
-        self.status_label.configure(foreground="green")
+        self.status_var.set("●  启动中…")
+        self.status_label.configure(foreground="gray")
         self.url_var.set(f"http://localhost:{port}")
-        
-
-        self._update_windows_toggle_state()
-        self._update_wsl_toggle_state()
 
         logger.info(f"服务器在端口 {port} 启动中…")
+        self.root.after(600, self._check_server_started, port)
 
-    def _run_server(self, port: int):
+    def _check_server_started(self, port: int):
+        self._server_starting = False
+        if self.server_thread is None:
+            return
+        if self.server_thread.is_alive():
+            self.server_running = True
+            self.status_var.set("●  运行中")
+            self.status_label.configure(foreground="green")
+            self._update_windows_toggle_state()
+            self._update_wsl_toggle_state()
+        else:
+            self.server_running = False
+            self.server_instance = None
+            self.server_thread = None
+            self.status_var.set("●  已停止")
+            self.status_label.configure(foreground="gray")
+            self.url_var.set("")
+            self.server_btn.configure(text="启动服务器")
+            self.port_entry.configure(state=tk.NORMAL)
+            self.key_entry.configure(state=tk.NORMAL)
+            self.model_settings_btn.configure(state=tk.NORMAL)
+            self._update_windows_toggle_state()
+            self._update_wsl_toggle_state()
+            messagebox.showerror("启动失败", f"端口 {port} 被占用或无法绑定，请更换端口后重试。")
+
+    def _run_server(self, port: int, model_map: dict[str, str], base_url: str):
         try:
-            app = create_app()
+            app = create_app(model_map=model_map, base_url=base_url)
             config = uvicorn.Config(
                 app,
                 host="0.0.0.0",
@@ -432,6 +565,7 @@ class ProxyGUI:
         self.server_btn.configure(text="启动服务器")
         self.port_entry.configure(state=tk.NORMAL)
         self.key_entry.configure(state=tk.NORMAL)
+        self.model_settings_btn.configure(state=tk.NORMAL)
 
         self._update_windows_toggle_state()
         self._update_wsl_toggle_state()
@@ -504,7 +638,10 @@ class ProxyGUI:
 
     def _scan_wsl(self):
         """Detect WSL Codex configs in background, then update UI on main thread."""
-        self._wsl_configs = find_wsl_configs()
+        try:
+            self._wsl_configs = find_wsl_configs()
+        except Exception:
+            self._wsl_configs = []
         self.root.after(0, self._update_wsl_ui_after_scan)
 
     def _update_wsl_ui_after_scan(self):
@@ -598,10 +735,13 @@ class ProxyGUI:
     # ── Cleanup ──────────────────────────────────────────────
 
     def _on_close(self):
-        if self.server_running:
-            if not messagebox.askyesno("退出确认", "服务器正在运行，确定要停止并退出吗？"):
+        if self._server_starting or self.server_running:
+            if not messagebox.askyesno("退出确认", "服务器正在启动或运行中，确定要停止并退出吗？"):
                 return
-            self._stop_server()
+            if self.server_running:
+                self._stop_server()
+            elif self._server_starting:
+                self._server_starting = False
         atexit.unregister(self._cleanup_on_exit)
         self.root.destroy()
 

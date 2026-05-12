@@ -10,15 +10,7 @@ import httpx
 logger = logging.getLogger("proxy-to-codex")
 
 # ── Config ──────────────────────────────────────────────────
-DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-
-_api_key: str = ""
-
-def set_api_key(key: str) -> None:
-    global _api_key
-    _api_key = key
-
-MODEL_MAP = {
+DEFAULT_MODEL_MAP = {
     "gpt-5.4": "deepseek-v4-pro",
     "gpt-5.5": "deepseek-v4-pro",
     "gpt-4o": "deepseek-v4-flash",
@@ -26,7 +18,14 @@ MODEL_MAP = {
     "gpt-4.1": "deepseek-v4-pro",
     "gpt-4.1-mini": "deepseek-v4-flash",
 }
-DEFAULT_MODEL = "deepseek-v4-pro"
+DEFAULT_DS_MODEL = "deepseek-v4-pro"
+DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+
+_api_key: str = ""
+
+def set_api_key(key: str) -> None:
+    global _api_key
+    _api_key = key
 
 
 # ── SessionStore ────────────────────────────────────────────
@@ -78,7 +77,7 @@ def _clean_schema(obj: dict) -> dict:
 
 
 # ── Request translation ─────────────────────────────────────
-def translate_response_create_to_chat(body: dict) -> tuple[dict, str, dict]:
+def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | None = None) -> tuple[dict, str, dict]:
     response_id = f"resp_{uuid.uuid4().hex[:12]}"
     original_model = body.get("model", "gpt-5.4")
 
@@ -189,7 +188,8 @@ def translate_response_create_to_chat(body: dict) -> tuple[dict, str, dict]:
             },
         })
 
-    ds_model = MODEL_MAP.get(original_model, DEFAULT_MODEL)
+    _mm = model_map if model_map is not None else DEFAULT_MODEL_MAP
+    ds_model = _mm.get(original_model, next(iter(_mm.values())) if _mm else DEFAULT_DS_MODEL)
 
     chat_body: dict = {
         "model": ds_model,
@@ -635,8 +635,15 @@ def _translate_chat_response_to_responses(
 
 
 # ── Create App ──────────────────────────────────────────────
-def create_app() -> FastAPI:
+def create_app(model_map: dict[str, str] | None = None, base_url: str | None = None) -> FastAPI:
     app = FastAPI()
+
+    _model_map = model_map if model_map is not None else DEFAULT_MODEL_MAP
+    _base_url = base_url if base_url is not None else DEFAULT_BASE_URL
+    _default_ds = next(iter(_model_map.values())) if _model_map else DEFAULT_DS_MODEL
+
+    app.state.model_map = _model_map
+    app.state.base_url = _base_url
 
     @app.websocket("/v1/responses")
     async def responses_websocket(ws: WebSocket):
@@ -668,7 +675,7 @@ def create_app() -> FastAPI:
                 turn_state.clear()
 
                 try:
-                    chat_body, response_id, meta = translate_response_create_to_chat(body)
+                    chat_body, response_id, meta = translate_response_create_to_chat(body, _model_map)
                 except Exception as e:
                     await ws.send_text(json.dumps({
                         "type": "error",
@@ -716,7 +723,7 @@ def create_app() -> FastAPI:
                     async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
                         async with client.stream(
                             "POST",
-                            f"{DEEPSEEK_BASE}/chat/completions",
+                            f"{_base_url}/chat/completions",
                             headers=headers,
                             json=chat_body,
                         ) as resp:
@@ -826,7 +833,7 @@ def create_app() -> FastAPI:
             inner = body
 
         try:
-            chat_body, response_id, meta = translate_response_create_to_chat(inner)
+            chat_body, response_id, meta = translate_response_create_to_chat(inner, _model_map)
         except Exception as e:
             logger.error(f"Request translation failed: {e}")
             return JSONResponse(
@@ -865,7 +872,7 @@ def create_app() -> FastAPI:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
                 resp = await client.post(
-                    f"{DEEPSEEK_BASE}/chat/completions",
+                    f"{_base_url}/chat/completions",
                     headers=headers,
                     json=chat_body,
                 )
@@ -915,17 +922,14 @@ def create_app() -> FastAPI:
     async def list_models():
         return {
             "object": "list",
-            "data": [
-                {"id": m, "object": "model"}
-                for m in ["gpt-5.4", "gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini"]
-            ],
+            "data": [{"id": m, "object": "model"} for m in _model_map],
         }
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
         body_j = await request.json()
         model = body_j.get("model", "gpt-5.4")
-        body_j["model"] = MODEL_MAP.get(model, DEFAULT_MODEL)
+        body_j["model"] = _model_map.get(model, _default_ds)
 
         headers = {
             "Authorization": f"Bearer {_api_key}",
@@ -935,7 +939,7 @@ def create_app() -> FastAPI:
         if body_j.get("stream"):
             client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10))
             req = client.build_request(
-                "POST", f"{DEEPSEEK_BASE}/chat/completions",
+                "POST", f"{_base_url}/chat/completions",
                 headers=headers, json=body_j,
             )
             resp = await client.send(req, stream=True)
@@ -957,7 +961,7 @@ def create_app() -> FastAPI:
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
             resp = await client.post(
-                f"{DEEPSEEK_BASE}/chat/completions",
+                f"{_base_url}/chat/completions",
                 headers=headers, json=body_j,
             )
             if resp.status_code != 200:

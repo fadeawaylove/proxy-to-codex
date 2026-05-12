@@ -135,7 +135,7 @@ def find_wsl_configs() -> list[dict]:
     try:
         output = _run_hidden(["wsl", "--list", "--quiet"])
         output = output.replace("\x00", "")
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return results
 
     distros = [d.strip() for d in output.splitlines() if d.strip()]
