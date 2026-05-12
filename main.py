@@ -770,10 +770,13 @@ class ProxyGUI:
                 data = json.loads(resp.read())
             latest = data.get("tag_name", "").lstrip("v")
             if not latest:
+                self.root.after(0, lambda: messagebox.showwarning(
+                    "检查更新", "无法获取最新版本信息。"))
                 return
             current = __version__.lstrip("v")
             if latest == current:
-                logger.debug(f"Already latest version ({current})")
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "检查更新", f"当前已是最新版本 v{current}。"))
                 return
             latest_parts = tuple(int(x) for x in latest.split(".") if x.isdigit())
             current_parts = tuple(int(x) for x in current.split(".") if x.isdigit())
@@ -788,8 +791,12 @@ class ProxyGUI:
                         break
                 logger.info(f"New version available: v{latest} (current: v{current})")
                 self.root.after(0, lambda: self._prompt_download(latest, download_url, filename))
+            else:
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "检查更新", f"当前已是最新版本 v{current}。"))
         except Exception:
-            pass
+            self.root.after(0, lambda: messagebox.showwarning(
+                "检查更新", "检查更新失败，请检查网络连接后重试。"))
 
     def _prompt_download(self, latest: str, download_url: str | None, filename: str | None):
         if not download_url:
