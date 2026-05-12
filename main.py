@@ -106,6 +106,7 @@ class ProxyGUI:
 
         self.port_var = tk.IntVar(value=DEFAULT_PORT)
         self.api_key_var = tk.StringVar(value="")
+        self._check_updates = True
         self._load_settings()
 
         self.config_path = get_config_path()
@@ -118,7 +119,6 @@ class ProxyGUI:
         self._build_ui()
         self._scan_wsl()
         self._poll_logs()
-        self._check_updates = True
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         atexit.register(self._cleanup_on_exit)
