@@ -3,7 +3,7 @@ import time
 import uuid
 import logging
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi import BackgroundTask
+from starlette.background import BackgroundTask
 from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
 
