@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -64,13 +65,13 @@ def read_config(config_path: Path) -> str:
     return ""
 
 
-def apply(port: int, config_path: Path) -> bool:
-    """Set Codex proxy URL to http://localhost:{port}/v1 in config.toml.
+def apply(port: int, config_path: Path, host: str = "localhost") -> bool:
+    """Set Codex proxy URL to http://{host}:{port}/v1 in config.toml.
 
     Uses tomlkit to preserve formatting, comments, and section order.
     Returns True on success.
     """
-    new_url = f"http://localhost:{port}/v1"
+    new_url = f"http://{host}:{port}/v1"
     ensure_config_dir(config_path)
 
     content = read_config(config_path)
@@ -98,3 +99,68 @@ def restore_latest(config_path: Path) -> Path | None:
         return None
     restore(backups[0], config_path)
     return backups[0]
+
+
+def get_wsl_host_ip(distro: str) -> str | None:
+    """Return the Windows host IP visible from inside a WSL distro."""
+    try:
+        output = subprocess.check_output(
+            ["wsl", "-d", distro, "-e", "sh", "-c",
+             "ip route show default | awk '{print $3}'"],
+            text=True, timeout=10,
+        )
+        ip = output.strip()
+        if ip:
+            return ip
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    return None
+
+
+def find_wsl_configs() -> list[dict]:
+    """Discover Codex config.toml files inside WSL distributions.
+
+    Returns a list of dicts with keys: config_path (Path), distro (str),
+    label (str).
+    """
+    results: list[dict] = []
+
+    # 1. List WSL distros
+    try:
+        output = subprocess.check_output(
+            ["wsl", "--list", "--quiet"],
+            text=True, timeout=10,
+        )
+        output = output.replace("\x00", "")
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return results
+
+    distros = [d.strip() for d in output.splitlines() if d.strip()]
+
+    # 2. For each distro, locate ~/.codex/config.toml
+    for distro in distros:
+        try:
+            home_output = subprocess.check_output(
+                ["wsl", "-d", distro, "-e", "sh", "-c", "echo $HOME"],
+                text=True, timeout=10,
+            )
+            home = home_output.strip()
+            if not home or not home.startswith("/"):
+                continue
+
+            # Convert /home/user  ->  \\wsl$\distro\home\user\.codex\config.toml
+            rel = home.lstrip("/")
+            config_path = Path(
+                f"\\\\wsl$\\{distro}\\{rel.replace('/', '\\')}\\.codex\\config.toml"
+            )
+
+            if config_path.exists():
+                results.append({
+                    "config_path": config_path,
+                    "distro": distro,
+                    "label": f"{distro} ({home}/.codex/config.toml)",
+                })
+        except (subprocess.CalledProcessError, OSError):
+            continue
+
+    return results

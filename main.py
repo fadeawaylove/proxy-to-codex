@@ -7,6 +7,7 @@ import threading
 import logging
 from logging.handlers import RotatingFileHandler
 import traceback
+import atexit
 from pathlib import Path
 from tkinter import ttk
 import tkinter as tk
@@ -20,6 +21,9 @@ from codex_config import (
     read_config,
     apply as apply_codex_config,
     restore,
+    restore_latest,
+    find_wsl_configs,
+    get_wsl_host_ip,
 )
 from server import create_app, set_api_key
 
@@ -89,7 +93,7 @@ class ProxyGUI:
         self.root.title("Codex 代理管理")
         self.root.resizable(True, True)
         self.root.minsize(620, 480)
-        self.root.geometry("720x560")
+        self.root.geometry("720x580")
 
         self._set_window_icon()
 
@@ -104,17 +108,22 @@ class ProxyGUI:
 
         self.config_path = get_config_path()
 
+        self._wsl_configs: list[dict] = []
+        self._wsl_backups: dict[Path, Path | None] = {}
+        self._wsl_enabled = False
+
         self._build_ui()
         self._refresh_config_status()
+        self._scan_wsl()
         self._poll_logs()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        atexit.register(self._cleanup_on_exit)
 
     def _set_window_icon(self):
         try:
             if getattr(sys, "frozen", False):
                 if os.name == "nt":
-                    # Use the icon resource embedded in the exe by --icon
                     self.root.iconbitmap(sys.executable)
             else:
                 icon_dir = Path(__file__).parent
@@ -176,6 +185,23 @@ class ProxyGUI:
 
         self.view_config_btn = ttk.Button(codex_frame, text="查看配置", command=self._view_config)
         self.view_config_btn.grid(row=2, column=0, **pad)
+
+        # ── WSL 配置 ──────────────────────────────────────
+        wsl_frame = ttk.Frame(codex_frame)
+        wsl_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=(8, 2), padx=10)
+
+        ttk.Separator(wsl_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
+
+        ttk.Label(wsl_frame, text="WSL:", font=("", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
+
+        self.wsl_status_var = tk.StringVar(value="(检测中…)")
+        ttk.Label(wsl_frame, textvariable=self.wsl_status_var, foreground="gray").pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.wsl_toggle_btn = ttk.Button(
+            wsl_frame, text="启用WSL代理", command=self._toggle_wsl,
+            state=tk.DISABLED, width=14)
+        self.wsl_toggle_btn.pack(side=tk.RIGHT, padx=2, pady=2)
 
         # Row 3 — 日志
         log_header = ttk.Frame(self.root)
@@ -314,14 +340,13 @@ class ProxyGUI:
         self.url_var.set(f"http://localhost:{port}")
         self.stop_btn.configure(state=tk.NORMAL)
 
+        self._update_wsl_toggle_state()
+
         logger.info(f"服务器在端口 {port} 启动中…")
 
     def _run_server(self, port: int):
         try:
             app = create_app()
-            # PyInstaller windowed apps on Windows may not have stdout/stderr.
-            # Uvicorn's default logging config expects a TTY-backed stream and can
-            # crash during formatter setup, so reuse the GUI/file handlers instead.
             config = uvicorn.Config(
                 app,
                 host="0.0.0.0",
@@ -347,6 +372,7 @@ class ProxyGUI:
         self.server_thread = None
 
         self._auto_config_restore()
+        self._wsl_config_restore_internal()
 
         self.status_var.set("●  已停止")
         self.status_label.configure(foreground="gray")
@@ -355,6 +381,8 @@ class ProxyGUI:
         self.start_btn.configure(state=tk.NORMAL)
         self.port_entry.configure(state=tk.NORMAL)
         self.key_entry.configure(state=tk.NORMAL)
+
+        self._update_wsl_toggle_state()
 
         logger.info("服务器已停止。")
 
@@ -380,15 +408,109 @@ class ProxyGUI:
         except Exception as e:
             messagebox.showerror("错误", f"无法打开配置文件:\n{e}")
 
+    # ── WSL config management ────────────────────────────────
+
+    def _scan_wsl(self):
+        """Detect WSL Codex configs and update UI."""
+        self._wsl_configs = find_wsl_configs()
+        if self._wsl_configs:
+            labels = [c["label"] for c in self._wsl_configs]
+            self.wsl_status_var.set(" | ".join(labels))
+        else:
+            self.wsl_status_var.set("未检测到 WSL Codex 配置")
+        self._update_wsl_toggle_state()
+
+    def _update_wsl_toggle_state(self):
+        """Update WSL toggle button text and enabled state."""
+        if not self._wsl_configs:
+            self.wsl_toggle_btn.configure(state=tk.DISABLED)
+            return
+        if not self.server_running:
+            self.wsl_toggle_btn.configure(state=tk.DISABLED)
+            self._set_wsl_toggle_off()
+            return
+        self.wsl_toggle_btn.configure(state=tk.NORMAL)
+        if self._wsl_enabled:
+            self.wsl_toggle_btn.configure(text="关闭WSL代理")
+        else:
+            self.wsl_toggle_btn.configure(text="启用WSL代理")
+
+    def _set_wsl_toggle_off(self):
+        self._wsl_enabled = False
+        self.wsl_toggle_btn.configure(text="启用WSL代理")
+
+    def _toggle_wsl(self):
+        if self._wsl_enabled:
+            self._wsl_config_restore_internal()
+        else:
+            self._wsl_config_apply_internal()
+        self._update_wsl_toggle_state()
+
+    def _wsl_config_apply_internal(self):
+        """Backup and apply proxy config to all WSL configs (silent)."""
+        if not self._wsl_configs:
+            return
+        port = self.port_var.get()
+        self._wsl_backups.clear()
+        for entry in self._wsl_configs:
+            p = entry["config_path"]
+            distro = entry["distro"]
+            host = get_wsl_host_ip(distro) or "localhost"
+            try:
+                bk = backup(p)
+                self._wsl_backups[p] = bk
+                apply_codex_config(port, p, host)
+                logger.info(
+                    f"WSL {entry['distro']} 配置已生效"
+                    f" -> http://{host}:{port}/v1"
+                )
+            except Exception as e:
+                logger.error(
+                    f"WSL {entry['distro']} 配置应用失败: {e}"
+                )
+        self._wsl_enabled = True
+
+    def _wsl_config_restore_internal(self):
+        """Restore all WSL configs from backups (silent)."""
+        if not self._wsl_backups and not self._wsl_configs:
+            return
+        for entry in self._wsl_configs:
+            p = entry["config_path"]
+            bk = self._wsl_backups.get(p)
+            try:
+                if bk and bk.exists():
+                    restore(bk, p)
+                    logger.info(f"WSL {entry['distro']} 配置已还原")
+                else:
+                    fallback = restore_latest(p)
+                    if fallback:
+                        logger.info(
+                            f"WSL {entry['distro']} 配置已从最新备份还原"
+                        )
+            except Exception as e:
+                logger.error(
+                    f"WSL {entry['distro']} 配置还原失败: {e}"
+                )
+        self._wsl_backups.clear()
+        self._wsl_enabled = False
+
     # ── Cleanup ──────────────────────────────────────────────
 
     def _on_close(self):
         if self.server_running:
-            if messagebox.askyesno("退出确认", "服务器正在运行，确定要停止并退出吗？"):
-                self._stop_server()
-                self.root.destroy()
-        else:
-            self.root.destroy()
+            if not messagebox.askyesno("退出确认", "服务器正在运行，确定要停止并退出吗？"):
+                return
+            self._stop_server()
+        self._wsl_config_restore_internal()
+        atexit.unregister(self._cleanup_on_exit)
+        self.root.destroy()
+
+    def _cleanup_on_exit(self):
+        """Last-resort cleanup when process is killed."""
+        if self._wsl_enabled:
+            self._wsl_config_restore_internal()
+        if self.server_running:
+            self._auto_config_restore()
 
     def _clear_log(self):
         self.log_widget.configure(state=tk.NORMAL)
