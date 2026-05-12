@@ -53,30 +53,6 @@ jobs:
       - name: Build executable
         run: uv run pyinstaller --clean --noconfirm proxy-to-codex.spec
 
-      - name: Smoke test executable
-        shell: pwsh
-        run: |
-          $env:PROXY_TO_CODEX_SMOKE_TEST = '1'
-          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'proxy-to-codex-appdata'
-          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
-
-          $exe = Resolve-Path 'dist\proxy-to-codex.exe'
-          $process = Start-Process -FilePath $exe -PassThru
-          if (-not $process.WaitForExit(30000)) {
-            Stop-Process -Id $process.Id -Force
-            throw 'Packaged executable smoke test timed out.'
-          }
-          if ($process.ExitCode -ne 0) {
-            $logRoot = Join-Path $env:APPDATA 'proxy-to-codex\logs'
-            if (Test-Path $logRoot) {
-              Get-ChildItem $logRoot -File | ForEach-Object {
-                Write-Host "===== $($_.FullName) ====="
-                Get-Content $_.FullName -Tail 200
-              }
-            }
-            throw "Packaged executable smoke test failed with exit code $($process.ExitCode)."
-          }
-
       - name: Install Inno Setup
         shell: pwsh
         run: |

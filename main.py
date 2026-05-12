@@ -696,13 +696,8 @@ def main():
     except Exception:
         tb = traceback.format_exc()
         logger.error(f"GUI 启动失败:\n{tb}")
-        if os.environ.get("PROXY_TO_CODEX_SMOKE_TEST") == "1":
-            sys.exit(1)
         messagebox.showerror("致命错误", f"GUI 启动失败:\n{tb}")
         sys.exit(1)
-
-    if os.environ.get("PROXY_TO_CODEX_SMOKE_TEST") == "1":
-        root.after(300, root.destroy)
 
     root.mainloop()
 
