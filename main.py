@@ -9,10 +9,10 @@ from logging.handlers import RotatingFileHandler
 import traceback
 import atexit
 from pathlib import Path
-from tkinter import ttk
 import tkinter as tk
-from tkinter import messagebox, scrolledtext
+from tkinter import messagebox
 
+import customtkinter as ctk
 import uvicorn
 
 from codex_config import (
@@ -31,6 +31,10 @@ try:
     from _version import __version__
 except ImportError:
     __version__ = "dev"
+
+# ── Theme ────────────────────────────────────────────────────
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
 
 # ── Log file path ───────────────────────────────────────────
 def _log_file_path() -> Path:
@@ -90,12 +94,12 @@ DEFAULT_PORT = 43214
 
 # ── GUI Application ─────────────────────────────────────────
 class ProxyGUI:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: ctk.CTk):
         self.root = root
         self.root.title("Codex 代理管理")
         self.root.resizable(True, True)
-        self.root.minsize(620, 480)
-        self.root.geometry("720x580")
+        self.root.minsize(680, 540)
+        self.root.geometry("780x640")
 
         self._set_window_icon()
 
@@ -142,112 +146,123 @@ class ProxyGUI:
             pass
 
     def _build_ui(self):
-        pad = {"padx": 10, "pady": 4}
+        pad = {"padx": 12, "pady": 6}
 
-        # Row 0 — 服务器设置
-        settings_frame = ttk.LabelFrame(self.root, text="服务器设置")
+        # ── Row 0 — 服务器设置 ──────────────────────────────
+        settings_frame = ctk.CTkFrame(self.root)
         settings_frame.pack(fill=tk.X, **pad)
 
-        ttk.Label(settings_frame, text="端口:").grid(row=0, column=0, sticky=tk.W, **pad)
-        self.port_entry = ttk.Entry(settings_frame, textvariable=self.port_var, width=8)
-        self.port_entry.grid(row=0, column=1, sticky=tk.W, **pad)
+        ctk.CTkLabel(settings_frame, text="服务器设置", font=ctk.CTkFont(size=13, weight="bold")).pack(
+            anchor=tk.W, padx=10, pady=(6, 4))
 
-        ttk.Label(settings_frame, text="DeepSeek API 密钥:").grid(row=0, column=2, sticky=tk.W, **pad)
-        self.key_entry = ttk.Entry(settings_frame, textvariable=self.api_key_var, width=40, show="*")
-        self.key_entry.grid(row=0, column=3, sticky=tk.EW, **pad)
+        row0 = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        row0.pack(fill=tk.X, padx=10, pady=(0, 6))
 
-        settings_frame.columnconfigure(3, weight=1)
+        ctk.CTkLabel(row0, text="端口:").pack(side=tk.LEFT, padx=(0, 4))
+        self.port_entry = ctk.CTkEntry(row0, width=70, textvariable=self.port_var)
+        self.port_entry.pack(side=tk.LEFT, padx=(0, 12))
 
-        # Row 1 — 服务器控制
-        ctrl_frame = ttk.Frame(self.root)
+        ctk.CTkLabel(row0, text="API 密钥:").pack(side=tk.LEFT, padx=(0, 4))
+        self.key_entry = ctk.CTkEntry(row0, width=260, textvariable=self.api_key_var, show="*")
+        self.key_entry.pack(side=tk.LEFT, padx=(0, 8))
+
+        # ── Row 1 — 服务器控制 ──────────────────────────────
+        ctrl_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         ctrl_frame.pack(fill=tk.X, **pad)
 
-        self.server_btn = ttk.Button(ctrl_frame, text="启动服务器", command=self._toggle_server)
-        self.server_btn.pack(side=tk.LEFT, **pad)
+        self.server_btn = ctk.CTkButton(ctrl_frame, text="启动服务器", width=110,
+                                         command=self._toggle_server)
+        self.server_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.status_var = tk.StringVar(value="●  已停止")
-        self.status_label = ttk.Label(ctrl_frame, textvariable=self.status_var, foreground="gray")
-        self.status_label.pack(side=tk.LEFT, **pad)
+        self.status_label = ctk.CTkLabel(ctrl_frame, textvariable=self.status_var,
+                                          text_color="gray")
+        self.status_label.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.model_settings_btn = ttk.Button(
-            ctrl_frame, text="模型设置", command=self._open_model_settings)
-        self.model_settings_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.model_settings_btn = ctk.CTkButton(ctrl_frame, text="模型设置", width=90,
+                                                 command=self._open_model_settings)
+        self.model_settings_btn.pack(side=tk.LEFT)
 
         self.url_var = tk.StringVar(value="")
-        url_label = ttk.Label(ctrl_frame, textvariable=self.url_var, foreground="blue", cursor="hand2")
-        url_label.pack(side=tk.RIGHT, **pad)
+        ctk.CTkLabel(ctrl_frame, textvariable=self.url_var, text_color="#5294e2").pack(
+            side=tk.RIGHT)
 
-        # Row 2 — Windows 代理
-        win_frame = ttk.Frame(self.root)
+        # ── Row 2 — Windows 代理 ────────────────────────────
+        sep1 = ctk.CTkFrame(self.root, height=1, fg_color=("gray50", "gray30"))
+        sep1.pack(fill=tk.X, padx=12, pady=(2, 0))
+
+        win_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         win_frame.pack(fill=tk.X, **pad)
 
-        ttk.Separator(win_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
-
-        self.win_toggle_btn = ttk.Button(
+        self.win_toggle_btn = ctk.CTkButton(
             win_frame, text="启用Windows代理", command=self._toggle_windows,
-            state=tk.DISABLED, width=16)
-        self.win_toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
+            state="disabled", width=130)
+        self.win_toggle_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.win_status_var = tk.StringVar(value="未启用")
-        self.win_status_label = ttk.Label(
-            win_frame, textvariable=self.win_status_var, foreground="gray")
-        self.win_status_label.pack(side=tk.LEFT, padx=(0, 6))
+        self.win_status_label = ctk.CTkLabel(
+            win_frame, textvariable=self.win_status_var, text_color="gray")
+        self.win_status_label.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.view_win_config_btn = ttk.Button(
-            win_frame, text="查看配置", command=self._view_config,
-            width=10)
-        self.view_win_config_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.view_win_config_btn = ctk.CTkButton(
+            win_frame, text="查看配置", command=self._view_config, width=80)
+        self.view_win_config_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.config_path_var = tk.StringVar(value=str(self.config_path))
-        ttk.Label(win_frame, textvariable=self.config_path_var, foreground="gray").pack(
+        ctk.CTkLabel(win_frame, textvariable=self.config_path_var, text_color="gray").pack(
             side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Row 3 — WSL 代理
-        wsl_frame = ttk.Frame(self.root)
+        # ── Row 3 — WSL 代理 ────────────────────────────────
+        sep2 = ctk.CTkFrame(self.root, height=1, fg_color=("gray50", "gray30"))
+        sep2.pack(fill=tk.X, padx=12, pady=(2, 0))
+
+        wsl_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         wsl_frame.pack(fill=tk.X, **pad)
 
-        ttk.Separator(wsl_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
-
-        self.wsl_toggle_btn = ttk.Button(
+        self.wsl_toggle_btn = ctk.CTkButton(
             wsl_frame, text="启用WSL代理", command=self._toggle_wsl,
-            state=tk.DISABLED, width=16)
-        self.wsl_toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
+            state="disabled", width=130)
+        self.wsl_toggle_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.wsl_status_var = tk.StringVar(value="未启用")
-        self.wsl_status_label = ttk.Label(
-            wsl_frame, textvariable=self.wsl_status_var, foreground="gray")
-        self.wsl_status_label.pack(side=tk.LEFT, padx=(0, 6))
+        self.wsl_status_label = ctk.CTkLabel(
+            wsl_frame, textvariable=self.wsl_status_var, text_color="gray")
+        self.wsl_status_label.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.view_wsl_config_btn = ttk.Button(
-            wsl_frame, text="查看配置", command=self._view_wsl_configs,
-            width=10)
-        self.view_wsl_config_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.view_wsl_config_btn = ctk.CTkButton(
+            wsl_frame, text="查看配置", command=self._view_wsl_configs, width=80)
+        self.view_wsl_config_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         self.wsl_path_var = tk.StringVar(value="")
-        ttk.Label(wsl_frame, textvariable=self.wsl_path_var, foreground="gray").pack(
+        ctk.CTkLabel(wsl_frame, textvariable=self.wsl_path_var, text_color="gray").pack(
             side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Row 4 — 日志
-        log_header = ttk.Frame(self.root)
-        log_header.pack(fill=tk.X, padx=10, pady=(4, 0))
-        ttk.Label(log_header, text="日志", font=("", 9, "bold")).pack(side=tk.LEFT)
-        self.log_path_var = tk.StringVar(value=f"({LOG_FILE})")
-        ttk.Label(log_header, textvariable=self.log_path_var, foreground="gray",
-                  font=("", 8)).pack(side=tk.LEFT, padx=6)
-        ttk.Button(log_header, text="检查更新", command=self._check_update).pack(
-            side=tk.RIGHT, padx=(0, 6))
-        ttk.Button(log_header, text="清空日志", command=self._clear_log).pack(side=tk.RIGHT)
+        # ── Row 4 — 日志 ────────────────────────────────────
+        log_header = ctk.CTkFrame(self.root, fg_color="transparent")
+        log_header.pack(fill=tk.X, padx=12, pady=(8, 0))
 
-        log_frame = ttk.Frame(self.root)
+        ctk.CTkLabel(log_header, text="日志", font=ctk.CTkFont(size=12, weight="bold")).pack(
+            side=tk.LEFT)
+        self.log_path_var = tk.StringVar(value=f"({LOG_FILE})")
+        ctk.CTkLabel(log_header, textvariable=self.log_path_var, text_color="gray",
+                      font=ctk.CTkFont(size=10)).pack(side=tk.LEFT, padx=8)
+
+        ctk.CTkButton(log_header, text="检查更新", command=self._check_update,
+                       width=80).pack(side=tk.RIGHT, padx=(0, 6))
+        ctk.CTkButton(log_header, text="清空日志", command=self._clear_log,
+                       width=80).pack(side=tk.RIGHT, padx=(0, 4))
+
+        log_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         log_frame.pack(fill=tk.BOTH, expand=True, **pad)
 
-        self.log_widget = scrolledtext.ScrolledText(
-            log_frame, wrap=tk.WORD, state=tk.DISABLED,
-            font=("Consolas", 9), bg="#1e1e1e", fg="#d4d4d4",
-            insertbackground="white",
+        self.log_widget = ctk.CTkTextbox(
+            log_frame, wrap="word", state="disabled",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color="#111111", text_color="#d4d4d4",
         )
         self.log_widget.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
+        # Tag colors
         self.log_widget.tag_config("ERROR", foreground="#f44747")
         self.log_widget.tag_config("WARNING", foreground="#e5c07b")
         self.log_widget.tag_config("INFO", foreground="#d4d4d4")
@@ -267,18 +282,16 @@ class ProxyGUI:
             else:
                 tag = "INFO"
 
-            self.log_widget.configure(state=tk.NORMAL)
+            self.log_widget.configure(state="normal")
             self.log_widget.insert(tk.END, msg + "\n", tag)
             self.log_widget.see(tk.END)
-            self.log_widget.configure(state=tk.DISABLED)
+            self.log_widget.configure(state="disabled")
 
         self.root.after(100, self._poll_logs)
 
     # ── Server control ───────────────────────────────────────
-    # Windows proxy toggle (local config)
 
     def _windows_config_apply_internal(self):
-        """Backup and apply proxy config for local Windows Codex."""
         port = self.port_var.get()
         try:
             self._config_backup_path = backup(self.config_path)
@@ -294,7 +307,6 @@ class ProxyGUI:
         self._refresh_config_status()
 
     def _windows_config_restore_internal(self):
-        """Restore Windows config from backup."""
         if not self._windows_enabled:
             return
         if self._config_backup_path and self._config_backup_path.exists():
@@ -314,7 +326,6 @@ class ProxyGUI:
         self._refresh_config_status()
 
     def _update_windows_toggle_state(self):
-        """Update Windows toggle button text and enabled state."""
         if not self.server_running:
             self.win_toggle_btn.configure(state="disabled")
             self._set_windows_toggle_off()
@@ -332,9 +343,10 @@ class ProxyGUI:
         self.win_toggle_btn.configure(text="启用Windows代理")
         self._set_proxy_status(self.win_status_var, self.win_status_label, False)
 
-    def _set_proxy_status(self, status_var: tk.StringVar, status_label: ttk.Label, enabled: bool):
+    def _set_proxy_status(self, status_var: tk.StringVar, status_label: ctk.CTkLabel,
+                          enabled: bool):
         status_var.set("已启用" if enabled else "未启用")
-        status_label.configure(foreground="green" if enabled else "gray")
+        status_label.configure(text_color="green" if enabled else "gray")
 
     def _toggle_windows(self):
         if self._windows_enabled:
@@ -343,58 +355,44 @@ class ProxyGUI:
             self._windows_config_apply_internal()
         self._update_windows_toggle_state()
 
-    # ── Model settings popup ───────────────────────────────────
+    # ── Model settings popup ─────────────────────────────────
 
     def _open_model_settings(self):
-        dialog = tk.Toplevel(self.root)
+        dialog = ctk.CTkToplevel(self.root)
         dialog.title("模型设置")
         dialog.resizable(True, True)
-        dialog.minsize(420, 240)
-        dialog.geometry("520x360")
+        dialog.minsize(480, 300)
+        dialog.geometry("560x400")
         dialog.transient(self.root)
         dialog.grab_set()
 
-        # Work with a copy; commit on OK
         edit_map = dict(self.model_map)
         rows: list[dict] = []
 
-        # Scrollable area
-        canvas = tk.Canvas(dialog, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
-        scroll_frame = ttk.Frame(canvas)
-        scroll_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
-        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        def _on_canvas_configure(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Scrollable area using CTkScrollableFrame
+        scroll_frame = ctk.CTkScrollableFrame(dialog, label_text="别名 → DeepSeek 模型")
+        scroll_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 4))
 
         def _add_row(alias: str = "", ds_model: str = ""):
-            row_frame = ttk.Frame(scroll_frame)
-            row_frame.pack(fill=tk.X, pady=1)
+            row_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+            row_frame.pack(fill=tk.X, pady=2)
 
-            alias_entry = ttk.Entry(row_frame, width=22)
+            alias_entry = ctk.CTkEntry(row_frame, width=170, placeholder_text="别名")
             alias_entry.insert(0, alias)
-            alias_entry.pack(side=tk.LEFT, padx=1)
+            alias_entry.pack(side=tk.LEFT, padx=(0, 4))
 
-            ttk.Label(row_frame, text=" → ").pack(side=tk.LEFT)
+            ctk.CTkLabel(row_frame, text="→").pack(side=tk.LEFT, padx=4)
 
-            model_entry = ttk.Entry(row_frame, width=30)
+            model_entry = ctk.CTkEntry(row_frame, width=230, placeholder_text="DeepSeek 模型")
             model_entry.insert(0, ds_model)
-            model_entry.pack(side=tk.LEFT, padx=1)
+            model_entry.pack(side=tk.LEFT, padx=4)
 
-            remove_btn = ttk.Button(
-                row_frame, text="✕", width=3,
+            remove_btn = ctk.CTkButton(
+                row_frame, text="✕", width=32, fg_color="#b33",
+                hover_color="#d44",
                 command=lambda r=row_frame: _remove_row(r),
             )
-            remove_btn.pack(side=tk.LEFT, padx=2)
+            remove_btn.pack(side=tk.LEFT, padx=(4, 0))
 
             rows.append({
                 "frame": row_frame,
@@ -402,22 +400,21 @@ class ProxyGUI:
                 "model": model_entry,
             })
 
-        def _remove_row(row_frame: ttk.Frame):
+        def _remove_row(row_frame):
             for i, r in enumerate(rows):
                 if r["frame"] is row_frame:
                     r["frame"].destroy()
                     del rows[i]
                     break
 
-        # Populate from current edit_map
         for alias, ds_model in edit_map.items():
             _add_row(alias, ds_model)
 
         # Buttons bar
-        btn_bar = ttk.Frame(dialog)
-        btn_bar.pack(fill=tk.X, padx=8, pady=(2, 6))
+        btn_bar = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_bar.pack(fill=tk.X, padx=12, pady=(4, 12))
 
-        ttk.Button(btn_bar, text="+", width=3, command=_add_row).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(btn_bar, text="+", width=36, command=_add_row).pack(side=tk.LEFT)
 
         def _on_ok():
             new_map: dict[str, str] = {}
@@ -430,11 +427,11 @@ class ProxyGUI:
                 self.model_map = new_map
             dialog.destroy()
 
-        ttk.Button(btn_bar, text="确定", command=_on_ok).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(btn_bar, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+        ctk.CTkButton(btn_bar, text="确定", width=80, command=_on_ok).pack(side=tk.RIGHT, padx=4)
+        ctk.CTkButton(btn_bar, text="取消", width=80, fg_color="transparent",
+                       border_width=1, command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
 
     def _load_settings(self):
-        """Load persisted settings from settings.json."""
         try:
             if SETTINGS_FILE.exists():
                 data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -452,7 +449,6 @@ class ProxyGUI:
             self.model_map = dict(DEFAULT_MODEL_MAP)
 
     def _save_settings(self):
-        """Persist settings to settings.json."""
         try:
             SETTINGS_FILE.write_text(
                 json.dumps({
@@ -483,14 +479,13 @@ class ProxyGUI:
             return
 
         set_api_key(api_key)
-
         self._save_settings()
 
         self._server_starting = True
         self.server_btn.configure(text="停止服务器")
-        self.port_entry.configure(state=tk.DISABLED)
-        self.key_entry.configure(state=tk.DISABLED)
-        self.model_settings_btn.configure(state=tk.DISABLED)
+        self.port_entry.configure(state="disabled")
+        self.key_entry.configure(state="disabled")
+        self.model_settings_btn.configure(state="disabled")
 
         self.server_thread = threading.Thread(
             target=self._run_server, args=(port, self.model_map, self.base_url), daemon=True
@@ -498,7 +493,7 @@ class ProxyGUI:
         self.server_thread.start()
 
         self.status_var.set("●  启动中…")
-        self.status_label.configure(foreground="gray")
+        self.status_label.configure(text_color="gray")
         self.url_var.set(f"http://localhost:{port}")
 
         logger.info(f"服务器在端口 {port} 启动中…")
@@ -511,7 +506,7 @@ class ProxyGUI:
         if self.server_thread.is_alive():
             self.server_running = True
             self.status_var.set("●  运行中")
-            self.status_label.configure(foreground="green")
+            self.status_label.configure(text_color="green")
             self._update_windows_toggle_state()
             self._update_wsl_toggle_state()
         else:
@@ -519,12 +514,12 @@ class ProxyGUI:
             self.server_instance = None
             self.server_thread = None
             self.status_var.set("●  已停止")
-            self.status_label.configure(foreground="gray")
+            self.status_label.configure(text_color="gray")
             self.url_var.set("")
             self.server_btn.configure(text="启动服务器")
-            self.port_entry.configure(state=tk.NORMAL)
-            self.key_entry.configure(state=tk.NORMAL)
-            self.model_settings_btn.configure(state=tk.NORMAL)
+            self.port_entry.configure(state="normal")
+            self.key_entry.configure(state="normal")
+            self.model_settings_btn.configure(state="normal")
             self._update_windows_toggle_state()
             self._update_wsl_toggle_state()
             messagebox.showerror("启动失败", f"端口 {port} 被占用或无法绑定，请更换端口后重试。")
@@ -560,25 +555,24 @@ class ProxyGUI:
         self._wsl_config_restore_internal()
 
         self.status_var.set("●  已停止")
-        self.status_label.configure(foreground="gray")
+        self.status_label.configure(text_color="gray")
         self.url_var.set("")
         self.server_btn.configure(text="启动服务器")
-        self.port_entry.configure(state=tk.NORMAL)
-        self.key_entry.configure(state=tk.NORMAL)
-        self.model_settings_btn.configure(state=tk.NORMAL)
+        self.port_entry.configure(state="normal")
+        self.key_entry.configure(state="normal")
+        self.model_settings_btn.configure(state="normal")
 
         self._update_windows_toggle_state()
         self._update_wsl_toggle_state()
 
         logger.info("服务器已停止。")
 
-    # Codex config status
+    # ── Codex config status ──────────────────────────────────
 
     def _refresh_config_status(self):
         self.config_path_var.set(str(self.config_path))
 
     def _view_config(self):
-        """Show Windows Codex config content."""
         try:
             if self.config_path.exists():
                 content = read_config(self.config_path)
@@ -589,7 +583,6 @@ class ProxyGUI:
             messagebox.showerror("错误", f"无法读取配置文件:\n{e}")
 
     def _view_wsl_configs(self):
-        """Show all WSL config contents."""
         parts = []
         for entry in self._wsl_configs:
             p = entry["config_path"]
@@ -607,37 +600,35 @@ class ProxyGUI:
             self._show_config_viewer("WSL 配置", "未检测到配置", "未检测到 WSL Codex 配置")
 
     def _show_config_viewer(self, title: str, subtitle: str, content: str):
-        viewer = tk.Toplevel(self.root)
+        viewer = ctk.CTkToplevel(self.root)
         viewer.title(title)
-        viewer.geometry("760x520")
-        viewer.minsize(560, 360)
+        viewer.geometry("780x560")
+        viewer.minsize(580, 400)
         viewer.transient(self.root)
 
-        header = ttk.Frame(viewer)
-        header.pack(fill=tk.X, padx=12, pady=(12, 6))
+        ctk.CTkLabel(viewer, text=title, font=ctk.CTkFont(size=13, weight="bold")).pack(
+            anchor=tk.W, padx=14, pady=(14, 2))
+        ctk.CTkLabel(viewer, text=subtitle, text_color="gray").pack(
+            anchor=tk.W, padx=14, pady=(0, 8))
 
-        ttk.Label(header, text=title, font=("", 10, "bold")).pack(anchor=tk.W)
-        ttk.Label(header, text=subtitle, foreground="gray").pack(anchor=tk.W, pady=(2, 0))
-
-        text = scrolledtext.ScrolledText(
+        text = ctk.CTkTextbox(
             viewer,
-            wrap=tk.NONE,
-            state=tk.NORMAL,
-            font=("Consolas", 10),
+            wrap="none",
+            state="normal",
+            font=ctk.CTkFont(family="Consolas", size=12),
         )
-        text.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+        text.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 8))
         text.insert("1.0", content)
-        text.configure(state=tk.DISABLED)
+        text.configure(state="disabled")
 
-        footer = ttk.Frame(viewer)
-        footer.pack(fill=tk.X, padx=12, pady=(6, 12))
-        ttk.Button(footer, text="关闭", command=viewer.destroy, width=10).pack(side=tk.RIGHT)
+        footer = ctk.CTkFrame(viewer, fg_color="transparent")
+        footer.pack(fill=tk.X, padx=14, pady=(0, 14))
+        ctk.CTkButton(footer, text="关闭", command=viewer.destroy, width=80).pack(side=tk.RIGHT)
         viewer.focus_set()
 
     # ── WSL config management ────────────────────────────────
 
     def _scan_wsl(self):
-        """Detect WSL Codex configs in background, then update UI on main thread."""
         try:
             self._wsl_configs = find_wsl_configs()
         except Exception:
@@ -645,7 +636,6 @@ class ProxyGUI:
         self.root.after(0, self._update_wsl_ui_after_scan)
 
     def _update_wsl_ui_after_scan(self):
-        """Update WSL-related UI elements after background scan completes."""
         if self._wsl_configs:
             paths = [str(c["config_path"]) for c in self._wsl_configs]
             self.wsl_path_var.set(" | ".join(paths))
@@ -655,16 +645,15 @@ class ProxyGUI:
         self._update_wsl_toggle_state()
 
     def _update_wsl_toggle_state(self):
-        """Update WSL toggle button text and enabled state."""
         if not self._wsl_configs:
-            self.wsl_toggle_btn.configure(state=tk.DISABLED)
+            self.wsl_toggle_btn.configure(state="disabled")
             self._set_wsl_toggle_off()
             return
         if not self.server_running:
-            self.wsl_toggle_btn.configure(state=tk.DISABLED)
+            self.wsl_toggle_btn.configure(state="disabled")
             self._set_wsl_toggle_off()
             return
-        self.wsl_toggle_btn.configure(state=tk.NORMAL)
+        self.wsl_toggle_btn.configure(state="normal")
         if self._wsl_enabled:
             self.wsl_toggle_btn.configure(text="关闭WSL代理")
             self._set_proxy_status(self.wsl_status_var, self.wsl_status_label, True)
@@ -685,7 +674,6 @@ class ProxyGUI:
         self._update_wsl_toggle_state()
 
     def _wsl_config_apply_internal(self):
-        """Backup and apply proxy config to all WSL configs (silent)."""
         if not self._wsl_configs:
             return
         port = self.port_var.get()
@@ -698,18 +686,12 @@ class ProxyGUI:
                 bk = backup(p)
                 self._wsl_backups[p] = bk
                 apply_codex_config(port, p, host)
-                logger.info(
-                    f"WSL {entry['distro']} 配置已生效"
-                    f" -> http://{host}:{port}/v1"
-                )
+                logger.info(f"WSL {distro} 配置已生效 -> http://{host}:{port}/v1")
             except Exception as e:
-                logger.error(
-                    f"WSL {entry['distro']} 配置应用失败: {e}"
-                )
+                logger.error(f"WSL {distro} 配置应用失败: {e}")
         self._wsl_enabled = True
 
     def _wsl_config_restore_internal(self):
-        """Restore all WSL configs from backups (silent)."""
         if not self._wsl_backups and not self._wsl_configs:
             return
         for entry in self._wsl_configs:
@@ -722,20 +704,15 @@ class ProxyGUI:
                 else:
                     fallback = restore_latest(p)
                     if fallback:
-                        logger.info(
-                            f"WSL {entry['distro']} 配置已从最新备份还原"
-                        )
+                        logger.info(f"WSL {entry['distro']} 配置已从最新备份还原")
             except Exception as e:
-                logger.error(
-                    f"WSL {entry['distro']} 配置还原失败: {e}"
-                )
+                logger.error(f"WSL {entry['distro']} 配置还原失败: {e}")
         self._wsl_backups.clear()
         self._wsl_enabled = False
 
     # ── Cleanup ──────────────────────────────────────────────
 
     def _on_close(self):
-        # Always stop cleanly without confirmation — installer needs this
         if self.server_running:
             self._stop_server()
         self._server_starting = False
@@ -744,12 +721,10 @@ class ProxyGUI:
         os._exit(0)
 
     def _cleanup_on_exit(self):
-        """Last-resort cleanup when process is killed."""
         if self._wsl_enabled:
             self._wsl_config_restore_internal()
         if self._windows_enabled:
             self._windows_config_restore_internal()
-
 
     # ── Update check ─────────────────────────────────────────
 
@@ -802,13 +777,13 @@ class ProxyGUI:
         if not download_url:
             release_url = f"https://github.com/fadeawaylove/proxy-to-codex/releases/tag/v{latest}"
             messagebox.showinfo(
-                "\u53d1\u73b0\u65b0\u7248\u672c",
-                f"\u65b0\u7248\u672c v{latest} \u5df2\u53d1\u5e03\uff01\n\n\u4e0b\u8f7d\u5730\u5740\uff1a\n{release_url}",
+                "发现新版本",
+                f"新版本 v{latest} 已发布！\n\n下载地址：\n{release_url}",
             )
             return
         if messagebox.askyesno(
-            "\u53d1\u73b0\u65b0\u7248\u672c",
-            f"\u65b0\u7248\u672c v{latest} \u5df2\u53d1\u5e03\uff01\n\n\u662f\u5426\u4e0b\u8f7d\u5e76\u5b89\u88c5\uff1f",
+            "发现新版本",
+            f"新版本 v{latest} 已发布！\n\n是否下载并安装？",
         ):
             self._download_and_install(download_url, filename)
 
@@ -817,23 +792,21 @@ class ProxyGUI:
 
         dest = Path(tempfile.gettempdir()) / filename
 
-        progress_win = tk.Toplevel(self.root)
-        progress_win.title("\u4e0b\u8f7d\u66f4\u65b0")
-        progress_win.geometry("420x150")
+        progress_win = ctk.CTkToplevel(self.root)
+        progress_win.title("下载更新")
+        progress_win.geometry("440x160")
         progress_win.resizable(False, False)
         progress_win.transient(self.root)
         progress_win.grab_set()
 
-        ttk.Label(progress_win, text=f"\u6b63\u5728\u4e0b\u8f7d: {filename}").pack(padx=16, pady=(16, 8))
+        ctk.CTkLabel(progress_win, text=f"正在下载: {filename}").pack(padx=16, pady=(16, 8))
 
-        progress_var = tk.DoubleVar(value=0)
-        progress_bar = ttk.Progressbar(
-            progress_win, variable=progress_var, maximum=100, length=380
-        )
+        progress_bar = ctk.CTkProgressBar(progress_win, width=380)
+        progress_bar.set(0)
         progress_bar.pack(padx=16, pady=4)
 
         percent_var = tk.StringVar(value="0%")
-        ttk.Label(progress_win, textvariable=percent_var).pack(pady=4)
+        ctk.CTkLabel(progress_win, textvariable=percent_var).pack(pady=4)
 
         def do_download():
             try:
@@ -853,12 +826,12 @@ class ProxyGUI:
                             f.write(chunk)
                             downloaded += len(chunk)
                             if total:
-                                pct = downloaded / total * 100
+                                pct = downloaded / total
                                 progress_win.after(
                                     0,
                                     lambda p=pct: (
-                                        progress_var.set(p),
-                                        percent_var.set(f"{p:.0f}%"),
+                                        progress_bar.set(p),
+                                        percent_var.set(f"{p:.0%}"),
                                     ),
                                 )
                 progress_win.after(0, on_done)
@@ -866,45 +839,36 @@ class ProxyGUI:
                 progress_win.after(0, lambda: on_error(str(e)))
 
         def on_done():
-            percent_var.set("\u4e0b\u8f7d\u5b8c\u6210\uff0c\u6b63\u5728\u542f\u52a8\u5b89\u88c5\u7a0b\u5e8f\u2026")
+            percent_var.set("下载完成，正在启动安装程序…")
             progress_bar.configure(mode="indeterminate")
             progress_bar.start()
-            logger.info(f"Downloaded {filename}, launching installer\u2026")
+            logger.info(f"Downloaded {filename}, launching installer…")
             try:
                 subprocess.Popen([str(dest)])
                 progress_win.destroy()
                 self._on_close()
             except Exception as e:
                 logger.error(f"Failed to launch installer: {e}")
-                messagebox.showerror("\u9519\u8bef", f"\u542f\u52a8\u5b89\u88c5\u7a0b\u5e8f\u5931\u8d25:\n{e}")
+                messagebox.showerror("错误", f"启动安装程序失败:\n{e}")
                 progress_win.destroy()
 
         def on_error(msg: str):
             logger.error(f"Download failed: {msg}")
-            messagebox.showerror("\u4e0b\u8f7d\u5931\u8d25", f"\u4e0b\u8f7d\u66f4\u65b0\u5931\u8d25:\n{msg}")
+            messagebox.showerror("下载失败", f"下载更新失败:\n{msg}")
             progress_win.destroy()
 
         threading.Thread(target=do_download, daemon=True).start()
 
     def _clear_log(self):
-        self.log_widget.configure(state=tk.NORMAL)
+        self.log_widget.configure(state="normal")
         self.log_widget.delete("1.0", tk.END)
-        self.log_widget.configure(state=tk.DISABLED)
+        self.log_widget.configure(state="disabled")
         logger.debug("日志窗口已清空")
+
 
 # ── Main entry ──────────────────────────────────────────────
 def main():
-    root = tk.Tk()
-
-    style = ttk.Style()
-    try:
-        available = style.theme_names()
-        if "vista" in available:
-            style.theme_use("vista")
-        elif "clam" in available:
-            style.theme_use("clam")
-    except Exception:
-        pass
+    root = ctk.CTk()
 
     try:
         app = ProxyGUI(root)
@@ -915,6 +879,7 @@ def main():
         sys.exit(1)
 
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()
