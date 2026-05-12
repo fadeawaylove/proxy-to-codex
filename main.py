@@ -27,6 +27,11 @@ from codex_config import (
 )
 from server import create_app, set_api_key
 
+try:
+    from _version import __version__
+except ImportError:
+    __version__ = "dev"
+
 # ── Log file path ───────────────────────────────────────────
 def _log_file_path() -> Path:
     appdata = os.environ.get("APPDATA", str(Path.home()))
@@ -113,9 +118,11 @@ class ProxyGUI:
         self._build_ui()
         self._scan_wsl()
         self._poll_logs()
+        self._check_updates = True
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         atexit.register(self._cleanup_on_exit)
+        self.root.after(500, self._check_update)
 
     def _set_window_icon(self):
         try:
@@ -222,6 +229,11 @@ class ProxyGUI:
         self.log_path_var = tk.StringVar(value=f"({LOG_FILE})")
         ttk.Label(log_header, textvariable=self.log_path_var, foreground="gray",
                   font=("", 8)).pack(side=tk.LEFT, padx=6)
+        self.update_check_var = tk.BooleanVar(value=self._check_updates)
+        self.update_check_cb = ttk.Checkbutton(
+            log_header, text="检查更新", variable=self.update_check_var,
+            command=self._toggle_update_check)
+        self.update_check_cb.pack(side=tk.RIGHT, padx=(0, 6))
         ttk.Button(log_header, text="清空日志", command=self._clear_log).pack(side=tk.RIGHT)
 
         log_frame = ttk.Frame(self.root)
@@ -338,6 +350,8 @@ class ProxyGUI:
                     self.api_key_var.set(data["api_key"])
                 if data.get("port"):
                     self.port_var.set(data["port"])
+                if "check_updates" in data:
+                    self._check_updates = data["check_updates"]
         except Exception:
             pass
 
@@ -345,7 +359,7 @@ class ProxyGUI:
         """Persist API key and port to settings.json."""
         try:
             SETTINGS_FILE.write_text(
-                json.dumps({"api_key": self.api_key_var.get(), "port": self.port_var.get()}, indent=2),
+                json.dumps({"api_key": self.api_key_var.get(), "port": self.port_var.get(), "check_updates": self._check_updates}, indent=2),
                 encoding="utf-8",
             )
         except Exception as e:
@@ -601,6 +615,62 @@ class ProxyGUI:
         if self._windows_enabled:
             self._windows_config_restore_internal()
 
+
+    # ── Update check ─────────────────────────────────────────
+
+    def _toggle_update_check(self):
+        self._check_updates = self.update_check_var.get()
+        self._save_settings()
+
+    def _check_update(self):
+        """Check GitHub Releases for a newer version in background."""
+        if not self._check_updates:
+            return
+        threading.Thread(target=self._check_update_thread, daemon=True).start()
+
+    def _check_update_thread(self):
+        try:
+            import urllib.request
+            import ssl
+            url = "https://api.github.com/repos/fadeawaylove/proxy-to-codex/releases/latest"
+            ctx = ssl.create_default_context()
+            req = urllib.request.Request(
+                url,
+                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "proxy-to-codex"},
+            )
+            with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+                data = json.loads(resp.read())
+            latest = data.get("tag_name", "").lstrip("v")
+            if not latest:
+                return
+            current = __version__.lstrip("v")
+            if latest == current:
+                logger.debug(f"Already latest version ({current})")
+                return
+            latest_parts = tuple(int(x) for x in latest.split(".") if x.isdigit())
+            current_parts = tuple(int(x) for x in current.split(".") if x.isdigit())
+            if latest_parts > current_parts:
+                logger.info(f"New version available: v{latest} (current: v{current})")
+                self.root.after(0, lambda: self._show_update_notification(latest))
+        except Exception:
+            pass
+
+    def _show_update_notification(self, latest: str):
+        release_url = f"https://github.com/fadeawaylove/proxy-to-codex/releases/tag/v{latest}"
+        sep = "\u2500" * 60
+        log_msg = (
+            f"{sep}\n"
+            f"   New version available: v{latest}\n"
+            f"   Download: {release_url}\n"
+            f"{sep}"
+        )
+        self.log_widget.configure(state=tk.NORMAL)
+        self.log_widget.insert("1.0", log_msg + "\n", "WARNING")
+        self.log_widget.configure(state=tk.DISABLED)
+        messagebox.showinfo(
+            "\u53d1\u73b0\u65b0\u7248\u672c",
+            f"\u65b0\u7248\u672c v{latest} \u5df2\u53d1\u5e03\uff01\n\n\u4e0b\u8f7d\u5730\u5740\uff1a\n{release_url}"
+        )
     def _clear_log(self):
         self.log_widget.configure(state=tk.NORMAL)
         self.log_widget.delete("1.0", tk.END)

@@ -137,7 +137,7 @@ Write-Host ""
 Write-Host "  Release:  ${release_url}" -ForegroundColor Cyan
 Write-Host "  Actions:  ${actions_url}" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  The .exe will be built by GitHub Actions and attached to the release."
+Write-Host "  The Windows installer (.exe) will be built by GitHub Actions and attached to the release."
 
 Pop-Location
 Pop-Location

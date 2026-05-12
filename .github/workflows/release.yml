@@ -31,6 +31,25 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $ver = '${{ github.event.inputs.version }}'
+          } else {
+            $ver = '${{ github.ref_name }}'
+          }
+          Write-Host "Version: $ver"
+          "ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Generate _version.py
+        shell: pwsh
+        run: |
+          $ver = '${{ steps.version.outputs.ver }}' -replace '^v', ''
+          Write-Host "Writing _version.py with version: $ver"
+          "__version__ = ""$ver""" | Set-Content _version.py -Encoding utf8
+
       - name: Build executable
         run: uv run pyinstaller --clean --noconfirm proxy-to-codex.spec
 
@@ -58,21 +77,34 @@ jobs:
             throw "Packaged executable smoke test failed with exit code $($process.ExitCode)."
           }
 
-      - name: Rename artifact with version
+      - name: Install Inno Setup
         shell: pwsh
         run: |
-          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
-            '${{ github.event.inputs.version }}'
-          } else {
-            '${{ github.ref_name }}'
+          choco install innosetup --yes --no-progress --limit-output
+          refreshenv
+          Write-Host "##[add-path]$env:ProgramFiles\Inno Setup 6"
+          echo "$env:ProgramFiles\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          set "ver=${{ steps.version.outputs.ver }}"
+          set "ver=%ver:~1%"
+          echo Version for Inno Setup: %ver%
+          iscc /DMyAppVersion=%ver% scripts\setup.iss
+
+      - name: Verify installer artifact
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem dist\*setup*.exe
+          if (-not $installers) {
+            throw 'Installer artifact not found in dist/'
           }
-          $src = 'dist\proxy-to-codex.exe'
-          $dst = "dist\proxy-to-codex_$tag.exe"
-          Rename-Item -LiteralPath $src -NewName (Split-Path $dst -Leaf)
+          Write-Host "Installer built: $($installers[0].Name) ($('{0:N0}' -f $installers[0].Length) bytes)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
-          files: dist/*.exe
+          files: dist/*setup*.exe
           generate_release_notes: true

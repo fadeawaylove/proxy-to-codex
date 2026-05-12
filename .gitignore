@@ -11,3 +11,6 @@ wheels/
 
 # Claude settings (contains API keys)
 .claude/
+
+# Version file generated during CI build
+_version.py
