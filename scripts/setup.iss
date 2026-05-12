@@ -52,3 +52,28 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Wnd: LongWord;
+  Timeout: Integer;
+begin
+  Result := '';
+
+  { Find the proxy-to-codex window by title }
+  Wnd := FindWindowByWindowName('Codex 代理管理');
+  if Wnd = 0 then
+    Exit;
+
+  { Send WM_CLOSE; _on_close will stop server and call os._exit(0) }
+  PostMessage(Wnd, 16 { WM_CLOSE }, 0, 0);
+
+  { Wait up to 5 seconds for the window to close }
+  Timeout := 0;
+  while (Timeout < 50) and (FindWindowByWindowName('Codex 代理管理') <> 0) do
+  begin
+    Sleep(100);
+    Timeout := Timeout + 1;
+  end;
+end;

@@ -550,7 +550,7 @@ class ProxyGUI:
             logger.info("服务器停止中…")
 
         if self.server_thread and self.server_thread.is_alive():
-            self.server_thread.join(timeout=3)
+            self.server_thread.join(timeout=1)
 
         self.server_running = False
         self.server_instance = None
@@ -735,15 +735,13 @@ class ProxyGUI:
     # ── Cleanup ──────────────────────────────────────────────
 
     def _on_close(self):
-        if self._server_starting or self.server_running:
-            if not messagebox.askyesno("退出确认", "服务器正在启动或运行中，确定要停止并退出吗？"):
-                return
-            if self.server_running:
-                self._stop_server()
-            elif self._server_starting:
-                self._server_starting = False
+        # Always stop cleanly without confirmation — installer needs this
+        if self.server_running:
+            self._stop_server()
+        self._server_starting = False
         atexit.unregister(self._cleanup_on_exit)
         self.root.destroy()
+        os._exit(0)
 
     def _cleanup_on_exit(self):
         """Last-resort cleanup when process is killed."""
