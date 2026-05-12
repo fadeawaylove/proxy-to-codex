@@ -1,12 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_submodules
+
+
+hiddenimports = []
+for package in (
+    'anyio',
+    'fastapi',
+    'h11',
+    'httpcore',
+    'httpx',
+    'pydantic',
+    'pydantic_core',
+    'starlette',
+    'uvicorn',
+    'websockets',
+):
+    hiddenimports += collect_submodules(package)
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -35,5 +52,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icon.ico'],
+    icon='icon.ico',
 )

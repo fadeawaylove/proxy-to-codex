@@ -61,12 +61,10 @@ root_logger.setLevel(logging.DEBUG)
 # ── GUI log capture (INFO) ──────────────────────────────────
 log_queue: queue.Queue[str] = queue.Queue()
 
-
 class QueueHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         msg = self.format(record)
         log_queue.put(msg)
-
 
 queue_handler = QueueHandler()
 queue_handler.setFormatter(logging.Formatter(
@@ -84,7 +82,6 @@ logger = logging.getLogger("proxy-to-codex.gui")
 
 # ── Default port ────────────────────────────────────────────
 DEFAULT_PORT = 43214
-
 
 # ── GUI Application ─────────────────────────────────────────
 class ProxyGUI:
@@ -111,9 +108,9 @@ class ProxyGUI:
         self._wsl_configs: list[dict] = []
         self._wsl_backups: dict[Path, Path | None] = {}
         self._wsl_enabled = False
+        self._windows_enabled = False
 
         self._build_ui()
-        self._refresh_config_status()
         self._scan_wsl()
         self._poll_logs()
 
@@ -151,15 +148,14 @@ class ProxyGUI:
         self.key_entry = ttk.Entry(settings_frame, textvariable=self.api_key_var, width=40, show="*")
         self.key_entry.grid(row=0, column=3, sticky=tk.EW, **pad)
 
-        # Row 1 — Start/Stop
+        settings_frame.columnconfigure(3, weight=1)
+
+        # Row 1 — 服务器控制
         ctrl_frame = ttk.Frame(self.root)
         ctrl_frame.pack(fill=tk.X, **pad)
 
-        self.start_btn = ttk.Button(ctrl_frame, text="启动服务器", command=self._start_server)
-        self.start_btn.pack(side=tk.LEFT, **pad)
-
-        self.stop_btn = ttk.Button(ctrl_frame, text="停止服务器", command=self._stop_server, state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, **pad)
+        self.server_btn = ttk.Button(ctrl_frame, text="启动服务器", command=self._toggle_server)
+        self.server_btn.pack(side=tk.LEFT, **pad)
 
         self.status_var = tk.StringVar(value="●  已停止")
         self.status_label = ttk.Label(ctrl_frame, textvariable=self.status_var, foreground="gray")
@@ -169,41 +165,57 @@ class ProxyGUI:
         url_label = ttk.Label(ctrl_frame, textvariable=self.url_var, foreground="blue", cursor="hand2")
         url_label.pack(side=tk.RIGHT, **pad)
 
-        # Row 2 — Codex 配置
-        codex_frame = ttk.LabelFrame(self.root, text="Codex 配置")
-        codex_frame.pack(fill=tk.X, **pad)
+        # Row 2 — Windows 代理
+        win_frame = ttk.Frame(self.root)
+        win_frame.pack(fill=tk.X, **pad)
 
-        self.config_path_var = tk.StringVar()
-        ttk.Label(codex_frame, text="配置文件:").grid(row=0, column=0, sticky=tk.W, **pad)
-        ttk.Label(codex_frame, textvariable=self.config_path_var, foreground="gray").grid(
-            row=0, column=1, columnspan=2, sticky=tk.W, **pad)
+        ttk.Separator(win_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
 
-        self.config_status_var = tk.StringVar(value="(检查中…)")
-        ttk.Label(codex_frame, text="状态:").grid(row=1, column=0, sticky=tk.W, **pad)
-        ttk.Label(codex_frame, textvariable=self.config_status_var).grid(
-            row=1, column=1, columnspan=2, sticky=tk.W, **pad)
+        self.win_toggle_btn = ttk.Button(
+            win_frame, text="启用Windows代理", command=self._toggle_windows,
+            state=tk.DISABLED, width=16)
+        self.win_toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        self.view_config_btn = ttk.Button(codex_frame, text="查看配置", command=self._view_config)
-        self.view_config_btn.grid(row=2, column=0, **pad)
+        self.win_status_var = tk.StringVar(value="未启用")
+        self.win_status_label = ttk.Label(
+            win_frame, textvariable=self.win_status_var, foreground="gray")
+        self.win_status_label.pack(side=tk.LEFT, padx=(0, 6))
 
-        # ── WSL 配置 ──────────────────────────────────────
-        wsl_frame = ttk.Frame(codex_frame)
-        wsl_frame.grid(row=3, column=0, columnspan=3, sticky=tk.EW, pady=(8, 2), padx=10)
+        self.view_win_config_btn = ttk.Button(
+            win_frame, text="查看配置", command=self._view_config,
+            width=10)
+        self.view_win_config_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.config_path_var = tk.StringVar(value=str(self.config_path))
+        ttk.Label(win_frame, textvariable=self.config_path_var, foreground="gray").pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Row 3 — WSL 代理
+        wsl_frame = ttk.Frame(self.root)
+        wsl_frame.pack(fill=tk.X, **pad)
 
         ttk.Separator(wsl_frame, orient="horizontal").pack(fill=tk.X, pady=(0, 4))
 
-        ttk.Label(wsl_frame, text="WSL:", font=("", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
-
-        self.wsl_status_var = tk.StringVar(value="(检测中…)")
-        ttk.Label(wsl_frame, textvariable=self.wsl_status_var, foreground="gray").pack(
-            side=tk.LEFT, fill=tk.X, expand=True)
-
         self.wsl_toggle_btn = ttk.Button(
             wsl_frame, text="启用WSL代理", command=self._toggle_wsl,
-            state=tk.DISABLED, width=14)
-        self.wsl_toggle_btn.pack(side=tk.RIGHT, padx=2, pady=2)
+            state=tk.DISABLED, width=16)
+        self.wsl_toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        # Row 3 — 日志
+        self.wsl_status_var = tk.StringVar(value="未启用")
+        self.wsl_status_label = ttk.Label(
+            wsl_frame, textvariable=self.wsl_status_var, foreground="gray")
+        self.wsl_status_label.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.view_wsl_config_btn = ttk.Button(
+            wsl_frame, text="查看配置", command=self._view_wsl_configs,
+            width=10)
+        self.view_wsl_config_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.wsl_path_var = tk.StringVar(value="")
+        ttk.Label(wsl_frame, textvariable=self.wsl_path_var, foreground="gray").pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Row 4 — 日志
         log_header = ttk.Frame(self.root)
         log_header.pack(fill=tk.X, padx=10, pady=(4, 0))
         ttk.Label(log_header, text="日志", font=("", 9, "bold")).pack(side=tk.LEFT)
@@ -227,11 +239,6 @@ class ProxyGUI:
         self.log_widget.tag_config("INFO", foreground="#d4d4d4")
         self.log_widget.tag_config("DEBUG", foreground="#808080")
 
-        settings_frame.columnconfigure(3, weight=1)
-        codex_frame.columnconfigure(1, weight=1)
-
-    # ── Log polling ──────────────────────────────────────────
-
     def _poll_logs(self):
         while True:
             try:
@@ -254,40 +261,73 @@ class ProxyGUI:
         self.root.after(100, self._poll_logs)
 
     # ── Server control ───────────────────────────────────────
+    # Windows proxy toggle (local config)
 
-    def _auto_config_apply(self):
-        """Backup current config, then apply proxy config. Track backup for later restore."""
+    def _windows_config_apply_internal(self):
+        """Backup and apply proxy config for local Windows Codex."""
+        port = self.port_var.get()
         try:
             self._config_backup_path = backup(self.config_path)
         except Exception as e:
-            logger.error(f"配置备份异常: {e}\n{traceback.format_exc()}")
+            logger.error(f"Windows config backup failed: {e}\n{traceback.format_exc()}")
             self._config_backup_path = None
+            return
         if self._config_backup_path:
-            logger.info(f"配置已自动备份到: {self._config_backup_path}")
-        port = self.port_var.get()
+            logger.info(f"Windows config backed up to: {self._config_backup_path}")
         apply_codex_config(port, self.config_path)
-        logger.info(f"Codex 配置已自动设为 http://localhost:{port}/v1")
+        self._windows_enabled = True
+        logger.info(f"Windows Codex config set to http://localhost:{port}/v1")
         self._refresh_config_status()
 
-    def _auto_config_restore(self):
-        """Restore config from the backup created on start, if any."""
-        if not self._config_backup_path:
+    def _windows_config_restore_internal(self):
+        """Restore Windows config from backup."""
+        if not self._windows_enabled:
             return
-        if not self._config_backup_path.exists():
-            logger.warning(f"备份文件已不存在: {self._config_backup_path}")
-            self._config_backup_path = None
-            return
-        try:
-            success = restore(self._config_backup_path, self.config_path)
-            if success:
-                logger.info(f"配置已自动还原自: {self._config_backup_path}")
+        if self._config_backup_path and self._config_backup_path.exists():
+            try:
+                restore(self._config_backup_path, self.config_path)
+                logger.info(f"Windows config restored from: {self._config_backup_path}")
+            except Exception as e:
+                logger.error(f"Windows config restore failed: {e}\n{traceback.format_exc()}")
+        else:
+            fallback = restore_latest(self.config_path)
+            if fallback:
+                logger.info(f"Windows config restored from latest backup: {fallback}")
             else:
-                logger.warning(f"配置还原失败: {self._config_backup_path}")
-        except Exception as e:
-            logger.error(f"配置还原异常: {e}\n{traceback.format_exc()}")
-        finally:
-            self._config_backup_path = None
-            self._refresh_config_status()
+                logger.warning("No backup found for Windows config restore")
+        self._config_backup_path = None
+        self._windows_enabled = False
+        self._refresh_config_status()
+
+    def _update_windows_toggle_state(self):
+        """Update Windows toggle button text and enabled state."""
+        if not self.server_running:
+            self.win_toggle_btn.configure(state="disabled")
+            self._set_windows_toggle_off()
+            return
+        self.win_toggle_btn.configure(state="normal")
+        if self._windows_enabled:
+            self.win_toggle_btn.configure(text="关闭Windows代理")
+            self._set_proxy_status(self.win_status_var, self.win_status_label, True)
+        else:
+            self.win_toggle_btn.configure(text="启用Windows代理")
+            self._set_proxy_status(self.win_status_var, self.win_status_label, False)
+
+    def _set_windows_toggle_off(self):
+        self._windows_enabled = False
+        self.win_toggle_btn.configure(text="启用Windows代理")
+        self._set_proxy_status(self.win_status_var, self.win_status_label, False)
+
+    def _set_proxy_status(self, status_var: tk.StringVar, status_label: ttk.Label, enabled: bool):
+        status_var.set("已启用" if enabled else "未启用")
+        status_label.configure(foreground="green" if enabled else "gray")
+
+    def _toggle_windows(self):
+        if self._windows_enabled:
+            self._windows_config_restore_internal()
+        else:
+            self._windows_config_apply_internal()
+        self._update_windows_toggle_state()
 
     def _load_settings(self):
         """Load persisted API key and port from settings.json."""
@@ -311,6 +351,12 @@ class ProxyGUI:
         except Exception as e:
             logger.warning(f"保存设置失败: {e}")
 
+    def _toggle_server(self):
+        if self.server_running:
+            self._stop_server()
+        else:
+            self._start_server()
+
     def _start_server(self):
         port = self.port_var.get()
         api_key = self.api_key_var.get().strip()
@@ -323,9 +369,7 @@ class ProxyGUI:
 
         self._save_settings()
 
-        self._auto_config_apply()
-
-        self.start_btn.configure(state=tk.DISABLED)
+        self.server_btn.configure(text="停止服务器")
         self.port_entry.configure(state=tk.DISABLED)
         self.key_entry.configure(state=tk.DISABLED)
 
@@ -338,8 +382,9 @@ class ProxyGUI:
         self.status_var.set("●  运行中")
         self.status_label.configure(foreground="green")
         self.url_var.set(f"http://localhost:{port}")
-        self.stop_btn.configure(state=tk.NORMAL)
+        
 
+        self._update_windows_toggle_state()
         self._update_wsl_toggle_state()
 
         logger.info(f"服务器在端口 {port} 启动中…")
@@ -371,42 +416,82 @@ class ProxyGUI:
         self.server_instance = None
         self.server_thread = None
 
-        self._auto_config_restore()
+        self._windows_config_restore_internal()
         self._wsl_config_restore_internal()
 
         self.status_var.set("●  已停止")
         self.status_label.configure(foreground="gray")
         self.url_var.set("")
-        self.stop_btn.configure(state=tk.DISABLED)
-        self.start_btn.configure(state=tk.NORMAL)
+        self.server_btn.configure(text="启动服务器")
         self.port_entry.configure(state=tk.NORMAL)
         self.key_entry.configure(state=tk.NORMAL)
 
+        self._update_windows_toggle_state()
         self._update_wsl_toggle_state()
 
         logger.info("服务器已停止。")
 
-    # ── Codex config ─────────────────────────────────────────
+    # Codex config status
 
     def _refresh_config_status(self):
         self.config_path_var.set(str(self.config_path))
-        if self.config_path.exists():
-            content = read_config(self.config_path)
-            if "localhost" in content:
-                self.config_status_var.set("已配置本地代理")
-            else:
-                self.config_status_var.set("默认 (OpenAI API)")
-            self.view_config_btn.configure(state=tk.NORMAL)
-        else:
-            self.config_status_var.set("未找到配置文件")
-            self.view_config_btn.configure(state=tk.DISABLED)
 
     def _view_config(self):
-        """Open the config file with the system default editor."""
+        """Show Windows Codex config content."""
         try:
-            os.startfile(str(self.config_path))
+            if self.config_path.exists():
+                content = read_config(self.config_path)
+            else:
+                content = "配置文件不存在"
+            self._show_config_viewer("Windows 配置", str(self.config_path), content)
         except Exception as e:
-            messagebox.showerror("错误", f"无法打开配置文件:\n{e}")
+            messagebox.showerror("错误", f"无法读取配置文件:\n{e}")
+
+    def _view_wsl_configs(self):
+        """Show all WSL config contents."""
+        parts = []
+        for entry in self._wsl_configs:
+            p = entry["config_path"]
+            try:
+                if p.exists():
+                    content = read_config(p)
+                else:
+                    content = "配置文件不存在"
+                parts.append(f"── {entry['distro']} ({p}) ──\n{content}")
+            except Exception as e:
+                parts.append(f"── {entry['distro']} ({p}) ──\n读取失败: {e}")
+        if parts:
+            self._show_config_viewer("WSL 配置", f"{len(parts)} 个 WSL 配置", "\n\n".join(parts))
+        else:
+            self._show_config_viewer("WSL 配置", "未检测到配置", "未检测到 WSL Codex 配置")
+
+    def _show_config_viewer(self, title: str, subtitle: str, content: str):
+        viewer = tk.Toplevel(self.root)
+        viewer.title(title)
+        viewer.geometry("760x520")
+        viewer.minsize(560, 360)
+        viewer.transient(self.root)
+
+        header = ttk.Frame(viewer)
+        header.pack(fill=tk.X, padx=12, pady=(12, 6))
+
+        ttk.Label(header, text=title, font=("", 10, "bold")).pack(anchor=tk.W)
+        ttk.Label(header, text=subtitle, foreground="gray").pack(anchor=tk.W, pady=(2, 0))
+
+        text = scrolledtext.ScrolledText(
+            viewer,
+            wrap=tk.NONE,
+            state=tk.NORMAL,
+            font=("Consolas", 10),
+        )
+        text.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+        text.insert("1.0", content)
+        text.configure(state=tk.DISABLED)
+
+        footer = ttk.Frame(viewer)
+        footer.pack(fill=tk.X, padx=12, pady=(6, 12))
+        ttk.Button(footer, text="关闭", command=viewer.destroy, width=10).pack(side=tk.RIGHT)
+        viewer.focus_set()
 
     # ── WSL config management ────────────────────────────────
 
@@ -414,16 +499,18 @@ class ProxyGUI:
         """Detect WSL Codex configs and update UI."""
         self._wsl_configs = find_wsl_configs()
         if self._wsl_configs:
-            labels = [c["label"] for c in self._wsl_configs]
-            self.wsl_status_var.set(" | ".join(labels))
+            paths = [str(c["config_path"]) for c in self._wsl_configs]
+            self.wsl_path_var.set(" | ".join(paths))
         else:
-            self.wsl_status_var.set("未检测到 WSL Codex 配置")
+            self._set_wsl_toggle_off()
+            self.wsl_path_var.set("未检测到 WSL Codex 配置")
         self._update_wsl_toggle_state()
 
     def _update_wsl_toggle_state(self):
         """Update WSL toggle button text and enabled state."""
         if not self._wsl_configs:
             self.wsl_toggle_btn.configure(state=tk.DISABLED)
+            self._set_wsl_toggle_off()
             return
         if not self.server_running:
             self.wsl_toggle_btn.configure(state=tk.DISABLED)
@@ -432,12 +519,15 @@ class ProxyGUI:
         self.wsl_toggle_btn.configure(state=tk.NORMAL)
         if self._wsl_enabled:
             self.wsl_toggle_btn.configure(text="关闭WSL代理")
+            self._set_proxy_status(self.wsl_status_var, self.wsl_status_label, True)
         else:
             self.wsl_toggle_btn.configure(text="启用WSL代理")
+            self._set_proxy_status(self.wsl_status_var, self.wsl_status_label, False)
 
     def _set_wsl_toggle_off(self):
         self._wsl_enabled = False
         self.wsl_toggle_btn.configure(text="启用WSL代理")
+        self._set_proxy_status(self.wsl_status_var, self.wsl_status_label, False)
 
     def _toggle_wsl(self):
         if self._wsl_enabled:
@@ -501,7 +591,6 @@ class ProxyGUI:
             if not messagebox.askyesno("退出确认", "服务器正在运行，确定要停止并退出吗？"):
                 return
             self._stop_server()
-        self._wsl_config_restore_internal()
         atexit.unregister(self._cleanup_on_exit)
         self.root.destroy()
 
@@ -509,15 +598,14 @@ class ProxyGUI:
         """Last-resort cleanup when process is killed."""
         if self._wsl_enabled:
             self._wsl_config_restore_internal()
-        if self.server_running:
-            self._auto_config_restore()
+        if self._windows_enabled:
+            self._windows_config_restore_internal()
 
     def _clear_log(self):
         self.log_widget.configure(state=tk.NORMAL)
         self.log_widget.delete("1.0", tk.END)
         self.log_widget.configure(state=tk.DISABLED)
         logger.debug("日志窗口已清空")
-
 
 # ── Main entry ──────────────────────────────────────────────
 def main():
@@ -536,11 +624,17 @@ def main():
     try:
         app = ProxyGUI(root)
     except Exception:
-        messagebox.showerror("致命错误", f"GUI 启动失败:\n{traceback.format_exc()}")
+        tb = traceback.format_exc()
+        logger.error(f"GUI 启动失败:\n{tb}")
+        if os.environ.get("PROXY_TO_CODEX_SMOKE_TEST") == "1":
+            sys.exit(1)
+        messagebox.showerror("致命错误", f"GUI 启动失败:\n{tb}")
         sys.exit(1)
 
-    root.mainloop()
+    if os.environ.get("PROXY_TO_CODEX_SMOKE_TEST") == "1":
+        root.after(300, root.destroy)
 
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
