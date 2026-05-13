@@ -8,8 +8,8 @@
 - **模型映射可配置** — 自定义 GPT 别名 → DeepSeek 模型的映射关系，想用哪个模型自己定
 - **WebSocket 流式** — 支持 Codex 的流式对话，实时返回
 - **HTTP 回退** — 非流式请求自动走 HTTP 通道
-- **Codex 配置自动管理** — 一键启用/关闭代理，自动备份和恢复 Codex 的 `config.toml`
-- **WSL 支持** — 自动检测 WSL 中的 Codex 配置，可分别启用
+- **独立 Codex Profile** — 不修改本机真实 Codex 配置，用临时 profile 启动代理版 Codex
+- **快捷启动** — 一键打开已配置代理的 Codex 终端，也可复制启动命令
 - **端口检测** — 启动失败（如端口被占用）时弹窗提醒，不会假死
 
 ## 安装
@@ -59,15 +59,44 @@ gpt-4o       → deepseek-v4-flash
 
 可自由增删行，点「确定」保存。下次启动生效。
 
-### 3. 启用代理
+### 3. 打开代理版 Codex
 
-服务器启动后，「Windows 代理」/「WSL 代理」按钮变为可用。点击后自动修改 Codex 的配置，将其 API 请求指向本代理。
+服务器启动后，在「Codex 使用方式」里选择 Codex 的工作目录，然后点击「打开代理版 Codex」。
 
-关闭代理时会自动恢复原来的配置。
+程序会创建自己的临时 profile：
 
-### 4. 使用 Codex
+```text
+%APPDATA%\proxy-to-codex\codex-profile\config.toml
+%APPDATA%\proxy-to-codex\codex-profile\auth.json
+```
 
-代理启用后，在终端直接使用 Codex CLI 即可，请求会自动走 DeepSeek。
+`config.toml` 内容类似：
+
+```toml
+model_provider = "OpenAI"
+model = "gpt-5.4"
+review_model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+openai_base_url = "http://127.0.0.1:43214/v1"
+allow_insecure = true
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "http://127.0.0.1:43214/v1"
+wire_api = "responses"
+requires_openai_auth = true
+```
+
+`auth.json` 只写入一个本地占位 key：
+
+```json
+{"OPENAI_API_KEY":"proxy-to-codex"}
+```
+
+随后会在新终端中设置 `CODEX_HOME` 指向这个 profile，并启动 `codex`。你的真实 `~/.codex/config.toml` 不会被修改。
+
+也可以点击「复制启动命令」，手动在终端运行。
 
 ## 工作原理
 
@@ -91,9 +120,12 @@ Codex CLI ──→ proxy-to-codex (:43214) ──→ DeepSeek API
     "gpt-5.4": "deepseek-v4-pro",
     "gpt-4o": "deepseek-v4-flash"
   },
-  "base_url": "https://api.deepseek.com/v1"
+  "base_url": "https://api.deepseek.com/v1",
+  "workdir": "C:\\Users\\you"
 }
 ```
+
+代理版 Codex profile：`%APPDATA%\proxy-to-codex\codex-profile\config.toml`
 
 日志文件：`%APPDATA%\proxy-to-codex\logs\proxy.log`
 

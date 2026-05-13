@@ -7,24 +7,14 @@ import threading
 import logging
 from logging.handlers import RotatingFileHandler
 import traceback
-import atexit
+import shutil
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 import uvicorn
 
-from codex_config import (
-    get_config_path,
-    backup,
-    read_config,
-    apply as apply_codex_config,
-    restore,
-    restore_latest,
-    find_wsl_configs,
-    get_wsl_host_ip,
-)
 from server import create_app, set_api_key, DEFAULT_MODEL_MAP, DEFAULT_BASE_URL
 
 try:
@@ -52,6 +42,9 @@ def _settings_dir() -> Path:
     return d
 
 SETTINGS_FILE = _settings_dir() / "settings.json"
+CODEX_PROFILE_DIR = _settings_dir() / "codex-profile"
+CODEX_PROFILE_CONFIG = CODEX_PROFILE_DIR / "config.toml"
+CODEX_PROFILE_AUTH = CODEX_PROFILE_DIR / "auth.json"
 
 # ── File logging (DEBUG) ────────────────────────────────────
 file_handler = RotatingFileHandler(
@@ -107,27 +100,18 @@ class ProxyGUI:
         self.server_instance: uvicorn.Server | None = None
         self.server_running = False
         self._server_starting = False
-        self._config_backup_path: Path | None = None
 
         self.port_var = tk.IntVar(value=DEFAULT_PORT)
         self.api_key_var = tk.StringVar(value="")
+        self.workdir_var = tk.StringVar(value=str(Path.home()))
         self.model_map: dict[str, str] = {}
         self.base_url: str = DEFAULT_BASE_URL
         self._load_settings()
 
-        self.config_path = get_config_path()
-
-        self._wsl_configs: list[dict] = []
-        self._wsl_backups: dict[Path, Path | None] = {}
-        self._wsl_enabled = False
-        self._windows_enabled = False
-
         self._build_ui()
-        threading.Thread(target=self._scan_wsl, daemon=True).start()
         self._poll_logs()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        atexit.register(self._cleanup_on_exit)
 
     def _set_window_icon(self):
         try:
@@ -187,57 +171,49 @@ class ProxyGUI:
         ctk.CTkLabel(ctrl_frame, textvariable=self.url_var, text_color="#5294e2").pack(
             side=tk.RIGHT)
 
-        # ── Row 2 — Windows 代理 ────────────────────────────
+        # ── Row 2 — Codex 使用方式 ─────────────────────────
         sep1 = ctk.CTkFrame(self.root, height=1, fg_color=("gray50", "gray30"))
         sep1.pack(fill=tk.X, padx=12, pady=(2, 0))
 
-        win_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        win_frame.pack(fill=tk.X, **pad)
+        codex_frame = ctk.CTkFrame(self.root)
+        codex_frame.pack(fill=tk.X, **pad)
 
-        self.win_toggle_btn = ctk.CTkButton(
-            win_frame, text="启用Windows代理", command=self._toggle_windows,
-            state="disabled", width=130)
-        self.win_toggle_btn.pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(codex_frame, text="Codex 使用方式",
+                      font=ctk.CTkFont(size=13, weight="bold")).pack(
+            anchor=tk.W, padx=10, pady=(6, 4))
 
-        self.win_status_var = tk.StringVar(value="未启用")
-        self.win_status_label = ctk.CTkLabel(
-            win_frame, textvariable=self.win_status_var, text_color="gray")
-        self.win_status_label.pack(side=tk.LEFT, padx=(0, 8))
+        workdir_row = ctk.CTkFrame(codex_frame, fg_color="transparent")
+        workdir_row.pack(fill=tk.X, padx=10, pady=(0, 6))
 
-        self.view_win_config_btn = ctk.CTkButton(
-            win_frame, text="查看配置", command=self._view_config, width=80)
-        self.view_win_config_btn.pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(workdir_row, text="工作目录:").pack(side=tk.LEFT, padx=(0, 4))
+        self.workdir_entry = ctk.CTkEntry(workdir_row, textvariable=self.workdir_var)
+        self.workdir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ctk.CTkButton(workdir_row, text="选择", width=64,
+                       command=self._choose_workdir).pack(side=tk.LEFT)
 
-        self.config_path_var = tk.StringVar(value=str(self.config_path))
-        ctk.CTkLabel(win_frame, textvariable=self.config_path_var, text_color="gray").pack(
-            side=tk.LEFT, fill=tk.X, expand=True)
+        codex_btn_row = ctk.CTkFrame(codex_frame, fg_color="transparent")
+        codex_btn_row.pack(fill=tk.X, padx=10, pady=(0, 8))
 
-        # ── Row 3 — WSL 代理 ────────────────────────────────
-        sep2 = ctk.CTkFrame(self.root, height=1, fg_color=("gray50", "gray30"))
-        sep2.pack(fill=tk.X, padx=12, pady=(2, 0))
+        self.launch_codex_btn = ctk.CTkButton(
+            codex_btn_row, text="打开代理版 Codex", command=self._launch_codex,
+            state="disabled", width=140)
+        self.launch_codex_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        wsl_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        wsl_frame.pack(fill=tk.X, **pad)
+        self.copy_cmd_btn = ctk.CTkButton(
+            codex_btn_row, text="复制启动命令", command=self._copy_launch_command,
+            width=120)
+        self.copy_cmd_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.wsl_toggle_btn = ctk.CTkButton(
-            wsl_frame, text="启用WSL代理", command=self._toggle_wsl,
-            state="disabled", width=130)
-        self.wsl_toggle_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.view_profile_btn = ctk.CTkButton(
+            codex_btn_row, text="查看代理配置", command=self._view_profile_config,
+            width=110)
+        self.view_profile_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.wsl_status_var = tk.StringVar(value="未启用")
-        self.wsl_status_label = ctk.CTkLabel(
-            wsl_frame, textvariable=self.wsl_status_var, text_color="gray")
-        self.wsl_status_label.pack(side=tk.LEFT, padx=(0, 8))
+        self.profile_path_var = tk.StringVar(value=f"Profile: {CODEX_PROFILE_DIR}")
+        ctk.CTkLabel(codex_btn_row, textvariable=self.profile_path_var,
+                      text_color="gray").pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        self.view_wsl_config_btn = ctk.CTkButton(
-            wsl_frame, text="查看配置", command=self._view_wsl_configs, width=80)
-        self.view_wsl_config_btn.pack(side=tk.LEFT, padx=(0, 8))
-
-        self.wsl_path_var = tk.StringVar(value="")
-        ctk.CTkLabel(wsl_frame, textvariable=self.wsl_path_var, text_color="gray").pack(
-            side=tk.LEFT, fill=tk.X, expand=True)
-
-        # ── Row 4 — 日志 ────────────────────────────────────
+        # ── Row 3 — 日志 ────────────────────────────────────
         log_header = ctk.CTkFrame(self.root, fg_color="transparent")
         log_header.pack(fill=tk.X, padx=12, pady=(8, 0))
 
@@ -289,71 +265,128 @@ class ProxyGUI:
 
         self.root.after(100, self._poll_logs)
 
-    # ── Server control ───────────────────────────────────────
+    # ── Codex profile ────────────────────────────────────────
 
-    def _windows_config_apply_internal(self):
-        port = self.port_var.get()
+    def _choose_workdir(self):
+        initial = self._resolved_workdir()
+        chosen = filedialog.askdirectory(
+            title="选择 Codex 工作目录",
+            initialdir=str(initial),
+        )
+        if chosen:
+            self.workdir_var.set(chosen)
+            self._save_settings()
+
+    def _resolved_workdir(self) -> Path:
+        raw = self.workdir_var.get().strip()
+        path = Path(raw).expanduser() if raw else Path.home()
+        if not path.exists() or not path.is_dir():
+            return Path.home()
+        return path
+
+    def _profile_config_text(self, port: int | None = None) -> str:
+        p = port if port is not None else self.port_var.get()
+        return (
+            'model_provider = "OpenAI"\n'
+            'model = "gpt-5.4"\n'
+            'review_model = "gpt-5.4"\n'
+            'model_reasoning_effort = "high"\n'
+            "disable_response_storage = true\n"
+            f'openai_base_url = "http://127.0.0.1:{p}/v1"\n'
+            "allow_insecure = true\n"
+            "\n"
+            "[model_providers.OpenAI]\n"
+            'name = "OpenAI"\n'
+            f'base_url = "http://127.0.0.1:{p}/v1"\n'
+            'wire_api = "responses"\n'
+            "requires_openai_auth = true\n"
+        )
+
+    def _profile_auth_text(self) -> str:
+        return json.dumps({"OPENAI_API_KEY": "proxy-to-codex"}, ensure_ascii=False)
+
+    def _write_codex_profile(self) -> None:
+        CODEX_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        CODEX_PROFILE_CONFIG.write_text(
+            self._profile_config_text(),
+            encoding="utf-8",
+        )
+        CODEX_PROFILE_AUTH.write_text(
+            self._profile_auth_text(),
+            encoding="utf-8",
+        )
+        logger.info(f"代理版 Codex profile 已写入: {CODEX_PROFILE_DIR}")
+
+    def _build_launch_script(self) -> str:
+        workdir = self._resolved_workdir()
+        profile = CODEX_PROFILE_DIR
+        return "\n".join([
+            f"cd {self._ps_quote(str(workdir))}",
+            f"$env:CODEX_HOME = {self._ps_quote(str(profile))}",
+            "$env:OPENAI_API_KEY = 'proxy-to-codex'",
+            "codex",
+        ])
+
+    def _build_launch_command_text(self) -> str:
+        return self._build_launch_script().replace("\n", "; ")
+
+    @staticmethod
+    def _ps_quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    def _copy_launch_command(self):
         try:
-            self._config_backup_path = backup(self.config_path)
+            self._write_codex_profile()
+            command = self._build_launch_command_text()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(command)
+            self._save_settings()
+            logger.info("代理版 Codex 启动命令已复制到剪贴板。")
+            messagebox.showinfo("已复制", "代理版 Codex 启动命令已复制到剪贴板。")
         except Exception as e:
-            logger.error(f"Windows config backup failed: {e}\n{traceback.format_exc()}")
-            self._config_backup_path = None
-            return
-        if self._config_backup_path:
-            logger.info(f"Windows config backed up to: {self._config_backup_path}")
-        apply_codex_config(port, self.config_path)
-        self._windows_enabled = True
-        logger.info(f"Windows Codex config set to http://localhost:{port}/v1")
-        self._refresh_config_status()
+            logger.error(f"复制启动命令失败: {e}\n{traceback.format_exc()}")
+            messagebox.showerror("错误", f"复制启动命令失败:\n{e}")
 
-    def _windows_config_restore_internal(self):
-        if not self._windows_enabled:
-            return
-        if self._config_backup_path and self._config_backup_path.exists():
-            try:
-                restore(self._config_backup_path, self.config_path)
-                logger.info(f"Windows config restored from: {self._config_backup_path}")
-            except Exception as e:
-                logger.error(f"Windows config restore failed: {e}\n{traceback.format_exc()}")
-        else:
-            fallback = restore_latest(self.config_path)
-            if fallback:
-                logger.info(f"Windows config restored from latest backup: {fallback}")
-            else:
-                logger.warning("No backup found for Windows config restore")
-        self._config_backup_path = None
-        self._windows_enabled = False
-        self._refresh_config_status()
-
-    def _update_windows_toggle_state(self):
+    def _launch_codex(self):
         if not self.server_running:
-            self.win_toggle_btn.configure(state="disabled")
-            self._set_windows_toggle_off()
+            messagebox.showwarning("服务器未启动", "请先启动代理服务器。")
             return
-        self.win_toggle_btn.configure(state="normal")
-        if self._windows_enabled:
-            self.win_toggle_btn.configure(text="关闭Windows代理")
-            self._set_proxy_status(self.win_status_var, self.win_status_label, True)
-        else:
-            self.win_toggle_btn.configure(text="启用Windows代理")
-            self._set_proxy_status(self.win_status_var, self.win_status_label, False)
 
-    def _set_windows_toggle_off(self):
-        self._windows_enabled = False
-        self.win_toggle_btn.configure(text="启用Windows代理")
-        self._set_proxy_status(self.win_status_var, self.win_status_label, False)
+        try:
+            self._write_codex_profile()
+            self._save_settings()
+            script = self._build_launch_script()
+            wt = shutil.which("wt")
+            if wt:
+                subprocess.Popen([wt, "powershell", "-NoExit", "-Command", script])
+            else:
+                subprocess.Popen(["powershell", "-NoExit", "-Command", script])
+            logger.info(f"已打开代理版 Codex，工作目录: {self._resolved_workdir()}")
+        except Exception as e:
+            logger.error(f"打开代理版 Codex 失败: {e}\n{traceback.format_exc()}")
+            messagebox.showerror("错误", f"打开代理版 Codex 失败:\n{e}")
 
-    def _set_proxy_status(self, status_var: tk.StringVar, status_label: ctk.CTkLabel,
-                          enabled: bool):
-        status_var.set("已启用" if enabled else "未启用")
-        status_label.configure(text_color="green" if enabled else "gray")
+    def _update_codex_actions_state(self):
+        state = "normal" if self.server_running else "disabled"
+        self.launch_codex_btn.configure(state=state)
 
-    def _toggle_windows(self):
-        if self._windows_enabled:
-            self._windows_config_restore_internal()
-        else:
-            self._windows_config_apply_internal()
-        self._update_windows_toggle_state()
+    def _view_profile_config(self):
+        try:
+            if CODEX_PROFILE_CONFIG.exists():
+                content = CODEX_PROFILE_CONFIG.read_text(encoding="utf-8")
+            else:
+                content = self._profile_config_text()
+            if CODEX_PROFILE_AUTH.exists():
+                auth_content = CODEX_PROFILE_AUTH.read_text(encoding="utf-8")
+            else:
+                auth_content = self._profile_auth_text()
+            self._show_config_viewer(
+                "代理版 Codex 配置",
+                str(CODEX_PROFILE_DIR),
+                f"{CODEX_PROFILE_CONFIG}\n\n{content}\n\n{CODEX_PROFILE_AUTH}\n\n{auth_content}",
+            )
+        except Exception as e:
+            messagebox.showerror("错误", f"无法读取代理配置:\n{e}")
 
     # ── Model settings popup ─────────────────────────────────
 
@@ -443,6 +476,8 @@ class ProxyGUI:
                     self.model_map = data["model_map"]
                 if data.get("base_url"):
                     self.base_url = data["base_url"]
+                if data.get("workdir"):
+                    self.workdir_var.set(data["workdir"])
         except Exception:
             pass
         if not self.model_map:
@@ -456,6 +491,7 @@ class ProxyGUI:
                     "port": self.port_var.get(),
                     "model_map": self.model_map,
                     "base_url": self.base_url,
+                    "workdir": self.workdir_var.get(),
                 }, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
@@ -507,8 +543,7 @@ class ProxyGUI:
             self.server_running = True
             self.status_var.set("●  运行中")
             self.status_label.configure(text_color="green")
-            self._update_windows_toggle_state()
-            self._update_wsl_toggle_state()
+            self._update_codex_actions_state()
         else:
             self.server_running = False
             self.server_instance = None
@@ -520,8 +555,7 @@ class ProxyGUI:
             self.port_entry.configure(state="normal")
             self.key_entry.configure(state="normal")
             self.model_settings_btn.configure(state="normal")
-            self._update_windows_toggle_state()
-            self._update_wsl_toggle_state()
+            self._update_codex_actions_state()
             messagebox.showerror("启动失败", f"端口 {port} 被占用或无法绑定，请更换端口后重试。")
 
     def _run_server(self, port: int, model_map: dict[str, str], base_url: str):
@@ -551,9 +585,6 @@ class ProxyGUI:
         self.server_instance = None
         self.server_thread = None
 
-        self._windows_config_restore_internal()
-        self._wsl_config_restore_internal()
-
         self.status_var.set("●  已停止")
         self.status_label.configure(text_color="gray")
         self.url_var.set("")
@@ -562,42 +593,9 @@ class ProxyGUI:
         self.key_entry.configure(state="normal")
         self.model_settings_btn.configure(state="normal")
 
-        self._update_windows_toggle_state()
-        self._update_wsl_toggle_state()
+        self._update_codex_actions_state()
 
         logger.info("服务器已停止。")
-
-    # ── Codex config status ──────────────────────────────────
-
-    def _refresh_config_status(self):
-        self.config_path_var.set(str(self.config_path))
-
-    def _view_config(self):
-        try:
-            if self.config_path.exists():
-                content = read_config(self.config_path)
-            else:
-                content = "配置文件不存在"
-            self._show_config_viewer("Windows 配置", str(self.config_path), content)
-        except Exception as e:
-            messagebox.showerror("错误", f"无法读取配置文件:\n{e}")
-
-    def _view_wsl_configs(self):
-        parts = []
-        for entry in self._wsl_configs:
-            p = entry["config_path"]
-            try:
-                if p.exists():
-                    content = read_config(p)
-                else:
-                    content = "配置文件不存在"
-                parts.append(f"── {entry['distro']} ({p}) ──\n{content}")
-            except Exception as e:
-                parts.append(f"── {entry['distro']} ({p}) ──\n读取失败: {e}")
-        if parts:
-            self._show_config_viewer("WSL 配置", f"{len(parts)} 个 WSL 配置", "\n\n".join(parts))
-        else:
-            self._show_config_viewer("WSL 配置", "未检测到配置", "未检测到 WSL Codex 配置")
 
     def _show_config_viewer(self, title: str, subtitle: str, content: str):
         viewer = ctk.CTkToplevel(self.root)
@@ -626,105 +624,14 @@ class ProxyGUI:
         ctk.CTkButton(footer, text="关闭", command=viewer.destroy, width=80).pack(side=tk.RIGHT)
         viewer.focus_set()
 
-    # ── WSL config management ────────────────────────────────
-
-    def _scan_wsl(self):
-        try:
-            self._wsl_configs = find_wsl_configs()
-        except Exception:
-            self._wsl_configs = []
-        self.root.after(0, self._update_wsl_ui_after_scan)
-
-    def _update_wsl_ui_after_scan(self):
-        if self._wsl_configs:
-            paths = [str(c["config_path"]) for c in self._wsl_configs]
-            self.wsl_path_var.set(" | ".join(paths))
-        else:
-            self._set_wsl_toggle_off()
-            self.wsl_path_var.set("未检测到 WSL Codex 配置")
-        self._update_wsl_toggle_state()
-
-    def _update_wsl_toggle_state(self):
-        if not self._wsl_configs:
-            self.wsl_toggle_btn.configure(state="disabled")
-            self._set_wsl_toggle_off()
-            return
-        if not self.server_running:
-            self.wsl_toggle_btn.configure(state="disabled")
-            self._set_wsl_toggle_off()
-            return
-        self.wsl_toggle_btn.configure(state="normal")
-        if self._wsl_enabled:
-            self.wsl_toggle_btn.configure(text="关闭WSL代理")
-            self._set_proxy_status(self.wsl_status_var, self.wsl_status_label, True)
-        else:
-            self.wsl_toggle_btn.configure(text="启用WSL代理")
-            self._set_proxy_status(self.wsl_status_var, self.wsl_status_label, False)
-
-    def _set_wsl_toggle_off(self):
-        self._wsl_enabled = False
-        self.wsl_toggle_btn.configure(text="启用WSL代理")
-        self._set_proxy_status(self.wsl_status_var, self.wsl_status_label, False)
-
-    def _toggle_wsl(self):
-        if self._wsl_enabled:
-            self._wsl_config_restore_internal()
-        else:
-            self._wsl_config_apply_internal()
-        self._update_wsl_toggle_state()
-
-    def _wsl_config_apply_internal(self):
-        if not self._wsl_configs:
-            return
-        port = self.port_var.get()
-        self._wsl_backups.clear()
-        for entry in self._wsl_configs:
-            p = entry["config_path"]
-            distro = entry["distro"]
-            host = get_wsl_host_ip(distro) or "localhost"
-            try:
-                bk = backup(p)
-                self._wsl_backups[p] = bk
-                apply_codex_config(port, p, host)
-                logger.info(f"WSL {distro} 配置已生效 -> http://{host}:{port}/v1")
-            except Exception as e:
-                logger.error(f"WSL {distro} 配置应用失败: {e}")
-        self._wsl_enabled = True
-
-    def _wsl_config_restore_internal(self):
-        if not self._wsl_backups and not self._wsl_configs:
-            return
-        for entry in self._wsl_configs:
-            p = entry["config_path"]
-            bk = self._wsl_backups.get(p)
-            try:
-                if bk and bk.exists():
-                    restore(bk, p)
-                    logger.info(f"WSL {entry['distro']} 配置已还原")
-                else:
-                    fallback = restore_latest(p)
-                    if fallback:
-                        logger.info(f"WSL {entry['distro']} 配置已从最新备份还原")
-            except Exception as e:
-                logger.error(f"WSL {entry['distro']} 配置还原失败: {e}")
-        self._wsl_backups.clear()
-        self._wsl_enabled = False
-
     # ── Cleanup ──────────────────────────────────────────────
 
     def _on_close(self):
         if self.server_running:
             self._stop_server()
         self._server_starting = False
-        atexit.unregister(self._cleanup_on_exit)
         self.root.destroy()
         os._exit(0)
-
-    def _cleanup_on_exit(self):
-        if self._wsl_enabled:
-            self._wsl_config_restore_internal()
-        if self._windows_enabled:
-            self._windows_config_restore_internal()
 
     # ── Update check ─────────────────────────────────────────
 

@@ -312,7 +312,14 @@ def translate_sse_chunk_to_ws_events(sse_data: dict, state: dict, meta: dict) ->
     if has_usage:
         state["usage"] = sse_data["usage"]
 
-    if delta.get("role") == "assistant" and not state.get("has_lifecycle_emitted"):
+    if not state.get("has_lifecycle_emitted") and (
+        delta.get("role") == "assistant"
+        or delta.get("content")
+        or delta.get("reasoning_content")
+        or delta.get("tool_calls")
+        or finish_reason
+        or has_usage
+    ):
         state["has_lifecycle_emitted"] = True
         state["sequence_number"] = 0
         state["accumulated_text"] = ""
@@ -337,7 +344,15 @@ def translate_sse_chunk_to_ws_events(sse_data: dict, state: dict, meta: dict) ->
             "type": "response.in_progress",
             "response": {"id": meta["response_id"], "object": "response", "status": "in_progress"},
         })
-        return events
+
+        if delta.get("role") == "assistant" and not (
+            delta.get("content")
+            or delta.get("reasoning_content")
+            or delta.get("tool_calls")
+            or finish_reason
+            or has_usage
+        ):
+            return events
 
     if not state.get("has_lifecycle_emitted"):
         return events
@@ -547,8 +562,151 @@ def translate_sse_chunk_to_ws_events(sse_data: dict, state: dict, meta: dict) ->
                 },
             },
         })
+        state["completed_emitted"] = True
 
     return events
+
+
+def finalize_ws_response_events(state: dict, meta: dict) -> list[dict]:
+    """Emit a completed Responses event when upstream closes without finish_reason."""
+    if state.get("completed_emitted"):
+        return []
+
+    events: list[dict] = []
+    if not state.get("has_lifecycle_emitted"):
+        state["has_lifecycle_emitted"] = True
+        state.setdefault("accumulated_text", "")
+        state.setdefault("accumulated_reasoning", "")
+        state.setdefault("has_content_part", False)
+        state.setdefault("tool_call_states", {})
+        state.setdefault("output_count", 0)
+        events.append({
+            "type": "response.created",
+            "response": {
+                "id": meta["response_id"],
+                "object": "response",
+                "created_at": meta["created_at"],
+                "model": meta["original_model"],
+                "status": "in_progress",
+                "output": [],
+            },
+        })
+        events.append({
+            "type": "response.in_progress",
+            "response": {
+                "id": meta["response_id"],
+                "object": "response",
+                "status": "in_progress",
+            },
+        })
+
+    if state.get("has_content_part"):
+        text_idx = state.get("text_output_index", 0)
+        text = state.get("accumulated_text", "")
+        events.append({
+            "type": "response.output_text.done",
+            "output_index": text_idx,
+            "content_index": 0,
+            "text": text,
+        })
+        events.append({
+            "type": "response.content_part.done",
+            "output_index": text_idx,
+            "content_index": 0,
+            "part": {"type": "output_text", "text": text, "annotations": []},
+        })
+        events.append({
+            "type": "response.output_item.done",
+            "output_index": text_idx,
+            "item": {
+                "id": state.get("text_item_id", ""),
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "text": text,
+                    "annotations": [],
+                }],
+            },
+        })
+
+    for idx, tc_state in sorted(state.get("tool_call_states", {}).items()):
+        events.append({
+            "type": "response.function_call_arguments.done",
+            "output_index": tc_state["output_index"],
+            "arguments": tc_state["arguments"],
+            "name": tc_state["name"],
+            "call_id": tc_state["id"],
+        })
+        events.append({
+            "type": "response.output_item.done",
+            "output_index": tc_state["output_index"],
+            "item": {
+                "id": tc_state["item_id"],
+                "type": "function_call",
+                "name": tc_state["name"],
+                "call_id": tc_state["id"],
+                "arguments": tc_state["arguments"],
+                "status": "completed",
+            },
+        })
+
+    usage = state.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
+    reasoning_tokens = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
+
+    output_items = []
+    if state.get("has_content_part"):
+        output_items.append({
+            "id": state.get("text_item_id", ""),
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{
+                "type": "output_text",
+                "text": state.get("accumulated_text", ""),
+                "annotations": [],
+            }],
+        })
+    for idx in sorted(state.get("tool_call_states", {}).keys()):
+        tc_state = state["tool_call_states"][idx]
+        output_items.append({
+            "id": tc_state["item_id"],
+            "type": "function_call",
+            "name": tc_state["name"],
+            "call_id": tc_state["id"],
+            "arguments": tc_state["arguments"],
+            "status": "completed",
+        })
+
+    events.append({
+        "type": "response.completed",
+        "response": {
+            "id": meta["response_id"],
+            "object": "response",
+            "created_at": meta["created_at"],
+            "model": meta["original_model"],
+            "status": "completed",
+            "output": output_items,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
+            },
+        },
+    })
+    state["completed_emitted"] = True
+    return events
+
+
+def _format_sse_event(event: dict) -> str:
+    event_type = event.get("type", "message")
+    data = json.dumps(event, ensure_ascii=False)
+    return f"event: {event_type}\ndata: {data}\n\n"
 
 
 def build_assistant_from_state(state: dict) -> dict:
@@ -756,6 +914,8 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
                                     sse_data, turn_state, meta)
                                 for event in ws_events:
                                     await ws.send_text(json.dumps(event, ensure_ascii=False))
+                            for event in finalize_ws_response_events(turn_state, meta):
+                                await ws.send_text(json.dumps(event, ensure_ascii=False))
 
                 except httpx.TimeoutException:
                     await ws.send_text(json.dumps({
@@ -860,14 +1020,82 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
             session_store.set(response_id, list(chat_body.get("messages", [])))
             return JSONResponse(content=resp_data)
 
-        # Non-streaming call to DeepSeek
-        chat_body["stream"] = False
-        chat_body.pop("stream_options", None)
-
         headers = {
             "Authorization": f"Bearer {_api_key}",
             "Content-Type": "application/json",
         }
+
+        wants_stream = bool(inner.get("stream"))
+        if wants_stream:
+            chat_body["stream"] = True
+
+            async def response_event_stream():
+                turn_state: dict = {"meta": meta, "response_id": response_id}
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:
+                        async with client.stream(
+                            "POST",
+                            f"{_base_url}/chat/completions",
+                            headers=headers,
+                            json=chat_body,
+                        ) as resp:
+                            if resp.status_code != 200:
+                                error_text = await resp.aread()
+                                error_body = error_text.decode(errors="replace")[:1000]
+                                logger.error(
+                                    f"DeepSeek HTTP stream {resp.status_code}: {error_body}\n"
+                                    f"  → model={chat_body.get('model')}, "
+                                    f"msgs={len(chat_body.get('messages', []))}, "
+                                    f"keys={list(chat_body.keys())}"
+                                )
+                                yield _format_sse_event({
+                                    "type": "response.failed",
+                                    "response": {
+                                        "id": response_id,
+                                        "object": "response",
+                                        "status": "failed",
+                                    },
+                                    "error": {
+                                        "code": "upstream_error",
+                                        "message": f"DeepSeek returned {resp.status_code}: {error_body}",
+                                    },
+                                })
+                                return
+
+                            async for sse_data in parse_sse_stream(resp):
+                                events = translate_sse_chunk_to_ws_events(sse_data, turn_state, meta)
+                                for event in events:
+                                    yield _format_sse_event(event)
+                            for event in finalize_ws_response_events(turn_state, meta):
+                                yield _format_sse_event(event)
+
+                    assistant_msg = build_assistant_from_state(turn_state)
+                    stored = list(chat_body.get("messages", [])) + [assistant_msg]
+                    session_store.set(response_id, stored)
+                    session_store.cleanup()
+                    logger.info(f"POST /v1/responses → {meta['original_model']} → 200 (HTTP stream)")
+                except httpx.TimeoutException:
+                    yield _format_sse_event({
+                        "type": "response.failed",
+                        "response": {"id": response_id, "object": "response", "status": "failed"},
+                        "error": {"code": "timeout", "message": "DeepSeek API timed out"},
+                    })
+                except httpx.RequestError as e:
+                    yield _format_sse_event({
+                        "type": "response.failed",
+                        "response": {"id": response_id, "object": "response", "status": "failed"},
+                        "error": {"code": "upstream_error", "message": str(e)},
+                    })
+
+            return StreamingResponse(
+                response_event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        # Non-streaming call to DeepSeek
+        chat_body["stream"] = False
+        chat_body.pop("stream_options", None)
 
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=10)) as client:

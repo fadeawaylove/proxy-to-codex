@@ -40,6 +40,9 @@ jobs:
           } else {
             $ver = '${{ github.ref_name }}'
           }
+          if ($ver -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Version must match vX.Y.Z, got '$ver'"
+          }
           Write-Host "Version: $ver"
           "ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
@@ -49,6 +52,9 @@ jobs:
           $ver = '${{ steps.version.outputs.ver }}' -replace '^v', ''
           Write-Host "Writing _version.py with version: $ver"
           "__version__ = ""$ver""" | Set-Content _version.py -Encoding utf8
+
+      - name: Syntax check
+        run: uv run python -m py_compile main.py server.py codex_config.py
 
       - name: Build executable
         run: uv run pyinstaller --clean --noconfirm proxy-to-codex.spec
@@ -60,12 +66,11 @@ jobs:
           echo "$env:ProgramFiles\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build installer
-        shell: cmd
+        shell: pwsh
         run: |
-          set "ver=${{ steps.version.outputs.ver }}"
-          set "ver=%ver:~1%"
-          echo Version for Inno Setup: %ver%
-          iscc /DMyAppVersion=%ver% scripts\setup.iss
+          $ver = '${{ steps.version.outputs.ver }}' -replace '^v', ''
+          Write-Host "Version for Inno Setup: $ver"
+          iscc "/DMyAppVersion=$ver" scripts\setup.iss
 
       - name: Verify installer artifact
         shell: pwsh

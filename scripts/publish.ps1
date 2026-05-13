@@ -110,7 +110,7 @@ if ($LASTEXITCODE -ne 0) {
 # ── Git operations ─────────────────────────────────────────
 Write-Host "`nCommitting version bump and tagging..." -ForegroundColor Yellow
 
-git add pyproject.toml
+git add pyproject.toml uv.lock
 $commit_msg = "Bump version to ${new_tag}"
 git commit -m $commit_msg
 

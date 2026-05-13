@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 
 hiddenimports = []
@@ -23,7 +23,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=collect_data_files('customtkinter'),
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
