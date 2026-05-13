@@ -4,7 +4,17 @@
 .DESCRIPTION
     Checks for uncommitted changes, commits them, then bumps version
     (patch/minor/major), updates pyproject.toml, tags, and pushes.
+.PARAMETER Auto
+    Run without prompts, using defaults for all interactive choices.
 #>
+
+param(
+    [switch]$Auto
+)
+
+if ($args -contains "--auto") {
+    $Auto = $true
+}
 
 $ErrorActionPreference = "Stop"
 Push-Location (Split-Path -Parent $PSCommandPath)
@@ -19,7 +29,12 @@ if ($status) {
     git status --short
     Write-Host ""
 
-    $commit_msg = Read-Host "Enter commit message [chore: update]"
+    if ($Auto) {
+        $commit_msg = "chore: update"
+        Write-Host "Auto mode: using commit message [$commit_msg]"
+    } else {
+        $commit_msg = Read-Host "Enter commit message [chore: update]"
+    }
     if (-not $commit_msg) { $commit_msg = "chore: update" }
     Write-Host "`nStaging all changes..." -ForegroundColor Cyan
     git add -A
@@ -52,7 +67,12 @@ Write-Host "  [1] patch   (bug fixes)"
 Write-Host "  [2] minor   (new features, backward-compatible)"
 Write-Host "  [3] major   (breaking changes)"
 
-$choice = Read-Host "`nChoice (1/2/3) [1]"
+if ($Auto) {
+    $choice = "1"
+    Write-Host "`nAuto mode: using choice [1]"
+} else {
+    $choice = Read-Host "`nChoice (1/2/3) [1]"
+}
 if (-not $choice) { $choice = "1" }
 switch ($choice) {
     "1" { $level = "patch" }
@@ -71,20 +91,24 @@ uv run python -c "import sys; v=sys.argv[1].lstrip('v'); mj,mn,p=v.split('.'); m
 Write-Host "Bumping ${current} -> ${new_tag}" -ForegroundColor Green
 
 # ── Release notes ──────────────────────────────────────────
-Write-Host "`nEnter release notes (end a line with `$ to finish, or leave blank to skip):" -ForegroundColor Yellow
 $lines = @()
-while ($true) {
-    $line = Read-Host
-    if ($line -eq "") {
-        # empty first line means skip
-        if ($lines.Count -eq 0) { break }
-    }
-    $lines += $line
-    if ($line.EndsWith('$')) {
-        # remove the trailing $ from the last line
-        $lines[-1] = $line.Substring(0, $line.Length - 1)
-        if ($lines[-1] -eq "") { $lines = $lines[0..($lines.Count - 2)] }
-        break
+if ($Auto) {
+    Write-Host "`nAuto mode: skipping release notes." -ForegroundColor DarkGray
+} else {
+    Write-Host "`nEnter release notes (end a line with `$ to finish, or leave blank to skip):" -ForegroundColor Yellow
+    while ($true) {
+        $line = Read-Host
+        if ($line -eq "") {
+            # empty first line means skip
+            if ($lines.Count -eq 0) { break }
+        }
+        $lines += $line
+        if ($line.EndsWith('$')) {
+            # remove the trailing $ from the last line
+            $lines[-1] = $line.Substring(0, $line.Length - 1)
+            if ($lines[-1] -eq "") { $lines = $lines[0..($lines.Count - 2)] }
+            break
+        }
     }
 }
 $notes = $lines -join "`n"

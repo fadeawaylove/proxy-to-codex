@@ -83,6 +83,26 @@ jobs:
           Write-Host "Version for Inno Setup: $ver"
           iscc "/DMyAppVersion=$ver" scripts\setup.iss
 
+      - name: Smoke test installed executable
+        shell: pwsh
+        run: |
+          $installer = Resolve-Path "dist\*setup*.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "proxy-to-codex-install"
+          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="$installDir" /TASKS=""
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installer exited with code $LASTEXITCODE"
+          }
+          $exe = Join-Path $installDir "proxy-to-codex.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Installed executable not found at $exe"
+          }
+          $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+            throw "Installed executable exited during startup smoke test with code $($proc.ExitCode)"
+          }
+          Stop-Process -Id $proc.Id -Force
+
       - name: Verify installer artifact
         shell: pwsh
         run: |
