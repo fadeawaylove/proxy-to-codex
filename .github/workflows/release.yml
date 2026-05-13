@@ -59,6 +59,17 @@ jobs:
       - name: Build executable
         run: uv run pyinstaller --clean --noconfirm proxy-to-codex.spec
 
+      - name: Smoke test executable startup
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist\proxy-to-codex.exe"
+          $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+            throw "Executable exited during startup smoke test with code $($proc.ExitCode)"
+          }
+          Stop-Process -Id $proc.Id -Force
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
