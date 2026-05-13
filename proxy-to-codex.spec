@@ -37,8 +37,6 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
     name='proxy-to-codex',
     debug=False,
@@ -58,4 +56,18 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='icon.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[
+        'python*.dll',
+        'vcruntime*.dll',
+        'ucrtbase.dll',
+    ],
+    name='proxy-to-codex',
 )
