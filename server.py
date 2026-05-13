@@ -76,6 +76,48 @@ def _clean_schema(obj: dict) -> dict:
     return cleaned
 
 
+def _can_enable_thinking(messages: list[dict]) -> bool:
+    """DeepSeek thinking mode requires assistant history to include reasoning_content."""
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        if msg.get("tool_calls"):
+            continue
+        if "reasoning_content" not in msg:
+            return False
+    return True
+
+
+def _is_reasoning_context_error(status_code: int, error_body: str) -> bool:
+    return (
+        status_code == 400
+        and "reasoning_content" in error_body
+        and "thinking mode" in error_body
+    )
+
+
+def _without_thinking(chat_body: dict) -> dict:
+    retry_body = dict(chat_body)
+    retry_body.pop("thinking", None)
+    retry_body.pop("reasoning_effort", None)
+    retry_body["messages"] = _without_reasoning_content(
+        list(retry_body.get("messages", []))
+    )
+    return retry_body
+
+
+def _without_reasoning_content(messages: list[dict]) -> list[dict]:
+    cleaned = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            m = dict(msg)
+            m.pop("reasoning_content", None)
+            cleaned.append(m)
+        else:
+            cleaned.append(msg)
+    return cleaned
+
+
 # ── Request translation ─────────────────────────────────────
 def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | None = None) -> tuple[dict, str, dict]:
     response_id = f"resp_{uuid.uuid4().hex[:12]}"
@@ -211,12 +253,19 @@ def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | No
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict):
         effort = reasoning.get("effort", "")
-        if effort in ("low", "medium", "high"):
-            chat_body["thinking"] = {"type": "enabled"}
-            chat_body["reasoning_effort"] = "high"
-        elif effort == "max":
-            chat_body["thinking"] = {"type": "enabled"}
-            chat_body["reasoning_effort"] = "max"
+        if _can_enable_thinking(messages):
+            if effort in ("low", "medium", "high"):
+                chat_body["thinking"] = {"type": "enabled"}
+                chat_body["reasoning_effort"] = "high"
+            elif effort == "max":
+                chat_body["thinking"] = {"type": "enabled"}
+                chat_body["reasoning_effort"] = "max"
+        else:
+            chat_body["messages"] = _without_reasoning_content(messages)
+            logger.info(
+                "DeepSeek thinking disabled for this request because assistant history "
+                "is missing reasoning_content."
+            )
 
     tc = body.get("tool_choice")
     if tc:
@@ -895,6 +944,37 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
                                     f"stream={chat_body.get('stream')}, "
                                     f"keys={list(chat_body.keys())}"
                                 )
+                                if _is_reasoning_context_error(resp.status_code, error_body):
+                                    logger.info("Retrying DeepSeek request without thinking mode.")
+                                    retry_body = _without_thinking(chat_body)
+                                    async with client.stream(
+                                        "POST",
+                                        f"{_base_url}/chat/completions",
+                                        headers=headers,
+                                        json=retry_body,
+                                    ) as retry_resp:
+                                        if retry_resp.status_code == 200:
+                                            async for sse_data in parse_sse_stream(retry_resp):
+                                                ws_events = translate_sse_chunk_to_ws_events(
+                                                    sse_data, turn_state, meta)
+                                                for event in ws_events:
+                                                    await ws.send_text(json.dumps(event, ensure_ascii=False))
+                                            for event in finalize_ws_response_events(turn_state, meta):
+                                                await ws.send_text(json.dumps(event, ensure_ascii=False))
+                                            assistant_msg = build_assistant_from_state(turn_state)
+                                            stored = list(chat_body.get("messages", [])) + [assistant_msg]
+                                            session_store.set(response_id, stored)
+                                            session_store.cleanup()
+                                            continue
+                                        retry_error = await retry_resp.aread()
+                                        error_body = retry_error.decode(errors="replace")[:1000]
+                                        logger.error(
+                                            f"DeepSeek retry {retry_resp.status_code}: {error_body}\n"
+                                            f"  → model={retry_body.get('model')}, "
+                                            f"msgs={len(retry_body.get('messages', []))}, "
+                                            f"stream={retry_body.get('stream')}, "
+                                            f"keys={list(retry_body.keys())}"
+                                        )
                                 await ws.send_text(json.dumps({
                                     "type": "response.failed",
                                     "response": {
@@ -1048,6 +1128,40 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
                                     f"msgs={len(chat_body.get('messages', []))}, "
                                     f"keys={list(chat_body.keys())}"
                                 )
+                                if _is_reasoning_context_error(resp.status_code, error_body):
+                                    logger.info("Retrying DeepSeek HTTP stream without thinking mode.")
+                                    retry_body = _without_thinking(chat_body)
+                                    async with client.stream(
+                                        "POST",
+                                        f"{_base_url}/chat/completions",
+                                        headers=headers,
+                                        json=retry_body,
+                                    ) as retry_resp:
+                                        if retry_resp.status_code == 200:
+                                            async for sse_data in parse_sse_stream(retry_resp):
+                                                events = translate_sse_chunk_to_ws_events(
+                                                    sse_data, turn_state, meta)
+                                                for event in events:
+                                                    yield _format_sse_event(event)
+                                            for event in finalize_ws_response_events(turn_state, meta):
+                                                yield _format_sse_event(event)
+                                            assistant_msg = build_assistant_from_state(turn_state)
+                                            stored = list(chat_body.get("messages", [])) + [assistant_msg]
+                                            session_store.set(response_id, stored)
+                                            session_store.cleanup()
+                                            logger.info(
+                                                f"POST /v1/responses → {meta['original_model']} "
+                                                "→ 200 (HTTP stream retry without thinking)"
+                                            )
+                                            return
+                                        retry_error = await retry_resp.aread()
+                                        error_body = retry_error.decode(errors="replace")[:1000]
+                                        logger.error(
+                                            f"DeepSeek HTTP stream retry {retry_resp.status_code}: {error_body}\n"
+                                            f"  → model={retry_body.get('model')}, "
+                                            f"msgs={len(retry_body.get('messages', []))}, "
+                                            f"keys={list(retry_body.keys())}"
+                                        )
                                 yield _format_sse_event({
                                     "type": "response.failed",
                                     "response": {
