@@ -8,11 +8,14 @@ import logging
 from logging.handlers import RotatingFileHandler
 import traceback
 import shutil
+import webbrowser
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+import tomlkit
 import uvicorn
 
 from server import create_app, set_api_key, DEFAULT_MODEL_MAP, DEFAULT_BASE_URL
@@ -307,10 +310,48 @@ class ProxyGUI:
 
     def _write_codex_profile(self) -> None:
         CODEX_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        CODEX_PROFILE_CONFIG.write_text(
-            self._profile_config_text(),
-            encoding="utf-8",
-        )
+
+        port = self.port_var.get()
+        new_url = f"http://127.0.0.1:{port}/v1"
+
+        if CODEX_PROFILE_CONFIG.exists():
+            content = CODEX_PROFILE_CONFIG.read_text(encoding="utf-8")
+            try:
+                doc = tomlkit.parse(content)
+            except Exception:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = CODEX_PROFILE_CONFIG.with_suffix(f".toml.bak.{timestamp}")
+                shutil.copy2(CODEX_PROFILE_CONFIG, backup_path)
+                logger.warning(
+                    f"代理版 Codex config.toml 解析失败，已备份至 {backup_path.name}，将重建最小配置。"
+                )
+                doc = tomlkit.document()
+        else:
+            doc = tomlkit.document()
+
+        # Upsert proxy-owned top-level fields
+        doc["model_provider"] = "OpenAI"
+        doc["model"] = "gpt-5.4"
+        doc["review_model"] = "gpt-5.4"
+        doc["model_reasoning_effort"] = "high"
+        doc["disable_response_storage"] = True
+        doc["openai_base_url"] = new_url
+        doc["allow_insecure"] = True
+
+        # Upsert [model_providers.OpenAI] section
+        if "model_providers" not in doc:
+            doc["model_providers"] = tomlkit.table()
+        providers = doc["model_providers"]
+        if "OpenAI" not in providers:
+            providers["OpenAI"] = tomlkit.table()
+        openai_section = providers["OpenAI"]
+        openai_section["name"] = "OpenAI"
+        openai_section["base_url"] = new_url
+        openai_section["wire_api"] = "responses"
+        openai_section["requires_openai_auth"] = True
+
+        CODEX_PROFILE_CONFIG.write_text(tomlkit.dumps(doc), encoding="utf-8")
+
         CODEX_PROFILE_AUTH.write_text(
             self._profile_auth_text(),
             encoding="utf-8",
@@ -334,15 +375,29 @@ class ProxyGUI:
     def _ps_quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
+    def _copy_to_clipboard(self, content: str, success_message: str):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(content)
+        logger.info(success_message)
+        messagebox.showinfo("已复制", success_message)
+
+    def _open_folder(self, path: Path):
+        target = path if path.is_dir() else path.parent
+        try:
+            if os.name == "nt":
+                os.startfile(str(target))
+            else:
+                webbrowser.open(target.as_uri())
+        except Exception as e:
+            logger.error(f"打开文件夹失败: {e}\n{traceback.format_exc()}")
+            messagebox.showerror("错误", f"打开文件夹失败:\n{e}")
+
     def _copy_launch_command(self):
         try:
             self._write_codex_profile()
             command = self._build_launch_command_text()
-            self.root.clipboard_clear()
-            self.root.clipboard_append(command)
             self._save_settings()
-            logger.info("代理版 Codex 启动命令已复制到剪贴板。")
-            messagebox.showinfo("已复制", "代理版 Codex 启动命令已复制到剪贴板。")
+            self._copy_to_clipboard(command, "代理版 Codex 启动命令已复制到剪贴板。")
         except Exception as e:
             logger.error(f"复制启动命令失败: {e}\n{traceback.format_exc()}")
             messagebox.showerror("错误", f"复制启动命令失败:\n{e}")
@@ -384,6 +439,7 @@ class ProxyGUI:
                 "代理版 Codex 配置",
                 str(CODEX_PROFILE_DIR),
                 f"{CODEX_PROFILE_CONFIG}\n\n{content}\n\n{CODEX_PROFILE_AUTH}\n\n{auth_content}",
+                CODEX_PROFILE_DIR,
             )
         except Exception as e:
             messagebox.showerror("错误", f"无法读取代理配置:\n{e}")
@@ -597,7 +653,7 @@ class ProxyGUI:
 
         logger.info("服务器已停止。")
 
-    def _show_config_viewer(self, title: str, subtitle: str, content: str):
+    def _show_config_viewer(self, title: str, subtitle: str, content: str, folder_path: Path | None = None):
         viewer = ctk.CTkToplevel(self.root)
         viewer.title(title)
         viewer.geometry("780x560")
@@ -621,6 +677,19 @@ class ProxyGUI:
 
         footer = ctk.CTkFrame(viewer, fg_color="transparent")
         footer.pack(fill=tk.X, padx=14, pady=(0, 14))
+        ctk.CTkButton(
+            footer,
+            text="复制配置",
+            command=lambda: self._copy_to_clipboard(content, "代理配置已复制到剪贴板。"),
+            width=92,
+        ).pack(side=tk.LEFT)
+        if folder_path is not None:
+            ctk.CTkButton(
+                footer,
+                text="打开文件夹",
+                command=lambda: self._open_folder(folder_path),
+                width=92,
+            ).pack(side=tk.LEFT, padx=(8, 0))
         ctk.CTkButton(footer, text="关闭", command=viewer.destroy, width=80).pack(side=tk.RIGHT)
         viewer.focus_set()
 
