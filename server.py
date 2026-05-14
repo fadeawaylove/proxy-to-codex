@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 import logging
+import copy
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from starlette.background import BackgroundTask
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -32,10 +33,14 @@ def set_api_key(key: str) -> None:
 class SessionStore:
     def __init__(self, ttl: int = 3600):
         self._store: dict[str, tuple[float, list[dict]]] = {}
+        self._tool_call_store: dict[str, tuple[float, dict]] = {}
         self._ttl = ttl
 
     def set(self, response_id: str, messages: list[dict]) -> None:
-        self._store[response_id] = (time.time() + self._ttl, messages)
+        expires = time.time() + self._ttl
+        stored_messages = copy.deepcopy(messages)
+        self._store[response_id] = (expires, stored_messages)
+        self._index_tool_call_messages(stored_messages, expires)
 
     def get(self, response_id: str) -> list[dict] | None:
         entry = self._store.get(response_id)
@@ -45,13 +50,43 @@ class SessionStore:
         if time.time() > expires:
             del self._store[response_id]
             return None
-        return messages
+        return copy.deepcopy(messages)
+
+    def get_tool_call_message(self, call_id: str) -> dict | None:
+        if not call_id:
+            return None
+        entry = self._tool_call_store.get(call_id)
+        if entry is None:
+            return None
+        expires, message = entry
+        if time.time() > expires:
+            del self._tool_call_store[call_id]
+            return None
+        return copy.deepcopy(message)
 
     def cleanup(self) -> None:
         now = time.time()
         expired = [k for k, (exp, _) in self._store.items() if now > exp]
         for k in expired:
             del self._store[k]
+        expired_tool_calls = [
+            k for k, (exp, _) in self._tool_call_store.items() if now > exp
+        ]
+        for k in expired_tool_calls:
+            del self._tool_call_store[k]
+
+    def _index_tool_call_messages(self, messages: list[dict], expires: float) -> None:
+        for msg in messages:
+            if msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                continue
+            stored_msg = copy.deepcopy(msg)
+            for tool_call in tool_calls:
+                call_id = tool_call.get("id") or tool_call.get("call_id")
+                if call_id:
+                    self._tool_call_store[call_id] = (expires, stored_msg)
 
 
 session_store = SessionStore()
@@ -76,46 +111,94 @@ def _clean_schema(obj: dict) -> dict:
     return cleaned
 
 
-def _can_enable_thinking(messages: list[dict]) -> bool:
-    """DeepSeek thinking mode requires assistant history to include reasoning_content."""
+class ReasoningContextError(ValueError):
+    def __init__(self, response_id: str, missing_call_ids: list[str]):
+        self.response_id = response_id
+        self.missing_call_ids = missing_call_ids
+        call_list = ", ".join(missing_call_ids) if missing_call_ids else "(unknown)"
+        super().__init__(
+            "DeepSeek thinking mode requires reasoning_content for assistant "
+            f"tool_calls; missing call id(s): {call_list}"
+        )
+
+
+def _tool_call_ids(msg: dict) -> list[str]:
+    ids = []
+    for tool_call in msg.get("tool_calls") or []:
+        call_id = tool_call.get("id") or tool_call.get("call_id")
+        if call_id:
+            ids.append(call_id)
+    return ids
+
+
+def _find_tool_call_message(messages: list[dict], call_id: str) -> dict | None:
     for msg in messages:
         if msg.get("role") != "assistant":
             continue
-        if msg.get("tool_calls"):
-            continue
-        if "reasoning_content" not in msg:
-            return False
+        if call_id in _tool_call_ids(msg):
+            return msg
+    return None
+
+
+def _known_tool_call_ids(messages: list[dict]) -> set[str]:
+    ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            ids.update(_tool_call_ids(msg))
+    return ids
+
+
+def _append_recovered_tool_call_message(messages: list[dict], call_id: str) -> bool:
+    if not call_id:
+        return False
+    existing = _find_tool_call_message(messages, call_id)
+    if existing is not None:
+        return True
+    recovered = session_store.get_tool_call_message(call_id)
+    if not recovered:
+        return False
+    recovered_ids = set(_tool_call_ids(recovered))
+    known_ids = _known_tool_call_ids(messages)
+    if recovered_ids and recovered_ids.issubset(known_ids):
+        return True
+    messages.append(recovered)
     return True
 
 
-def _is_reasoning_context_error(status_code: int, error_body: str) -> bool:
-    return (
-        status_code == 400
-        and "reasoning_content" in error_body
-        and "thinking mode" in error_body
-    )
-
-
-def _without_thinking(chat_body: dict) -> dict:
-    retry_body = dict(chat_body)
-    retry_body.pop("thinking", None)
-    retry_body.pop("reasoning_effort", None)
-    retry_body["messages"] = _without_reasoning_content(
-        list(retry_body.get("messages", []))
-    )
-    return retry_body
-
-
-def _without_reasoning_content(messages: list[dict]) -> list[dict]:
-    cleaned = []
+def _assistant_tool_calls_missing_reasoning(messages: list[dict]) -> list[str]:
+    missing: list[str] = []
     for msg in messages:
-        if isinstance(msg, dict):
-            m = dict(msg)
-            m.pop("reasoning_content", None)
-            cleaned.append(m)
-        else:
-            cleaned.append(msg)
-    return cleaned
+        if msg.get("role") != "assistant":
+            continue
+        if not msg.get("tool_calls"):
+            continue
+        if msg.get("reasoning_content"):
+            continue
+        missing.extend(_tool_call_ids(msg) or ["(unknown)"])
+    return missing
+
+
+def _tool_context_summary(messages: list[dict]) -> list[dict]:
+    summary = []
+    for idx, msg in enumerate(messages):
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            continue
+        summary.append({
+            "index": idx,
+            "tool_call_ids": _tool_call_ids(msg),
+            "has_reasoning_content": bool(msg.get("reasoning_content")),
+        })
+    return summary
+
+
+def _log_deepseek_error(prefix: str, status_code: int, error_body: str, chat_body: dict) -> None:
+    logger.error(
+        f"{prefix} {status_code}: {error_body}\n"
+        f"  → model={chat_body.get('model')}, "
+        f"msgs={len(chat_body.get('messages', []))}, "
+        f"keys={list(chat_body.keys())}, "
+        f"tool_context={json.dumps(_tool_context_summary(chat_body.get('messages', [])), ensure_ascii=False)}"
+    )
 
 
 # ── Request translation ─────────────────────────────────────
@@ -140,6 +223,17 @@ def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | No
     pending_tool_calls: list[dict] = []
     has_new_input = False
 
+    def flush_pending_tool_calls() -> None:
+        nonlocal pending_tool_calls
+        if not pending_tool_calls:
+            return
+        messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": list(pending_tool_calls),
+        })
+        pending_tool_calls = []
+
     for item in body.get("input", []):
         item_type = item.get("type", "")
 
@@ -163,12 +257,7 @@ def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | No
                 text = ""
 
             if pending_tool_calls and role in ("user", "system"):
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": list(pending_tool_calls),
-                })
-                pending_tool_calls = []
+                flush_pending_tool_calls()
 
             if role in ("user", "system"):
                 messages.append({"role": role, "content": text})
@@ -178,24 +267,22 @@ def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | No
 
         elif item_type == "function_call":
             call_id = item.get("call_id", f"call_{uuid.uuid4().hex[:8]}")
-            pending_tool_calls.append({
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": item.get("name", ""),
-                    "arguments": item.get("arguments", ""),
-                },
-            })
+            if not _append_recovered_tool_call_message(messages, call_id):
+                pending_tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": item.get("name", ""),
+                        "arguments": item.get("arguments", ""),
+                    },
+                })
 
         elif item_type == "function_call_output":
-            if pending_tool_calls:
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": list(pending_tool_calls),
-                })
-                pending_tool_calls = []
             call_id = item.get("call_id", "")
+            if pending_tool_calls and not _find_tool_call_message(messages, call_id):
+                flush_pending_tool_calls()
+            elif call_id:
+                _append_recovered_tool_call_message(messages, call_id)
             output = item.get("output", "")
             if isinstance(output, dict):
                 output = json.dumps(output)
@@ -207,12 +294,7 @@ def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | No
             has_new_input = True
 
     if pending_tool_calls:
-        messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": list(pending_tool_calls),
-        })
-        pending_tool_calls = []
+        flush_pending_tool_calls()
 
     messages = _reorder_messages(messages)
 
@@ -253,19 +335,23 @@ def translate_response_create_to_chat(body: dict, model_map: dict[str, str] | No
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict):
         effort = reasoning.get("effort", "")
-        if _can_enable_thinking(messages):
-            if effort in ("low", "medium", "high"):
-                chat_body["thinking"] = {"type": "enabled"}
-                chat_body["reasoning_effort"] = "high"
-            elif effort == "max":
-                chat_body["thinking"] = {"type": "enabled"}
-                chat_body["reasoning_effort"] = "max"
-        else:
-            chat_body["messages"] = _without_reasoning_content(messages)
-            logger.info(
-                "DeepSeek thinking disabled for this request because assistant history "
-                "is missing reasoning_content."
-            )
+        if effort in ("low", "medium", "high"):
+            chat_body["thinking"] = {"type": "enabled"}
+            chat_body["reasoning_effort"] = "high"
+        elif effort == "max":
+            chat_body["thinking"] = {"type": "enabled"}
+            chat_body["reasoning_effort"] = "max"
+
+        if chat_body.get("thinking", {}).get("type") == "enabled":
+            missing_reasoning = _assistant_tool_calls_missing_reasoning(messages)
+            if missing_reasoning:
+                logger.error(
+                    "Cannot enable DeepSeek thinking because assistant tool_calls "
+                    "are missing reasoning_content: "
+                    f"{missing_reasoning}; tool_context="
+                    f"{json.dumps(_tool_context_summary(messages), ensure_ascii=False)}"
+                )
+                raise ReasoningContextError(response_id, missing_reasoning)
 
     tc = body.get("tool_choice")
     if tc:
@@ -883,6 +969,20 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
 
                 try:
                     chat_body, response_id, meta = translate_response_create_to_chat(body, _model_map)
+                except ReasoningContextError as e:
+                    await ws.send_text(json.dumps({
+                        "type": "response.failed",
+                        "response": {
+                            "id": e.response_id,
+                            "object": "response",
+                            "status": "failed",
+                        },
+                        "error": {
+                            "code": "missing_reasoning_context",
+                            "message": str(e),
+                        },
+                    }, ensure_ascii=False))
+                    continue
                 except Exception as e:
                     await ws.send_text(json.dumps({
                         "type": "error",
@@ -937,44 +1037,9 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
                                 error_body = error_text.decode(errors="replace")[:1000]
-                                logger.error(
-                                    f"DeepSeek {resp.status_code}: {error_body}\n"
-                                    f"  → model={chat_body.get('model')}, "
-                                    f"msgs={len(chat_body.get('messages', []))}, "
-                                    f"stream={chat_body.get('stream')}, "
-                                    f"keys={list(chat_body.keys())}"
+                                _log_deepseek_error(
+                                    "DeepSeek", resp.status_code, error_body, chat_body
                                 )
-                                if _is_reasoning_context_error(resp.status_code, error_body):
-                                    logger.info("Retrying DeepSeek request without thinking mode.")
-                                    retry_body = _without_thinking(chat_body)
-                                    async with client.stream(
-                                        "POST",
-                                        f"{_base_url}/chat/completions",
-                                        headers=headers,
-                                        json=retry_body,
-                                    ) as retry_resp:
-                                        if retry_resp.status_code == 200:
-                                            async for sse_data in parse_sse_stream(retry_resp):
-                                                ws_events = translate_sse_chunk_to_ws_events(
-                                                    sse_data, turn_state, meta)
-                                                for event in ws_events:
-                                                    await ws.send_text(json.dumps(event, ensure_ascii=False))
-                                            for event in finalize_ws_response_events(turn_state, meta):
-                                                await ws.send_text(json.dumps(event, ensure_ascii=False))
-                                            assistant_msg = build_assistant_from_state(turn_state)
-                                            stored = list(chat_body.get("messages", [])) + [assistant_msg]
-                                            session_store.set(response_id, stored)
-                                            session_store.cleanup()
-                                            continue
-                                        retry_error = await retry_resp.aread()
-                                        error_body = retry_error.decode(errors="replace")[:1000]
-                                        logger.error(
-                                            f"DeepSeek retry {retry_resp.status_code}: {error_body}\n"
-                                            f"  → model={retry_body.get('model')}, "
-                                            f"msgs={len(retry_body.get('messages', []))}, "
-                                            f"stream={retry_body.get('stream')}, "
-                                            f"keys={list(retry_body.keys())}"
-                                        )
                                 await ws.send_text(json.dumps({
                                     "type": "response.failed",
                                     "response": {
@@ -1074,6 +1139,28 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
 
         try:
             chat_body, response_id, meta = translate_response_create_to_chat(inner, _model_map)
+        except ReasoningContextError as e:
+            logger.error(f"Request translation failed: {e}")
+            response_id = e.response_id
+            failure = {
+                "type": "response.failed",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "status": "failed",
+                },
+                "error": {
+                    "code": "missing_reasoning_context",
+                    "message": str(e),
+                },
+            }
+            if bool(inner.get("stream")):
+                return StreamingResponse(
+                    iter([_format_sse_event(failure)]),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+            return JSONResponse(status_code=400, content=failure)
         except Exception as e:
             logger.error(f"Request translation failed: {e}")
             return JSONResponse(
@@ -1122,46 +1209,12 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
                                 error_body = error_text.decode(errors="replace")[:1000]
-                                logger.error(
-                                    f"DeepSeek HTTP stream {resp.status_code}: {error_body}\n"
-                                    f"  → model={chat_body.get('model')}, "
-                                    f"msgs={len(chat_body.get('messages', []))}, "
-                                    f"keys={list(chat_body.keys())}"
+                                _log_deepseek_error(
+                                    "DeepSeek HTTP stream",
+                                    resp.status_code,
+                                    error_body,
+                                    chat_body,
                                 )
-                                if _is_reasoning_context_error(resp.status_code, error_body):
-                                    logger.info("Retrying DeepSeek HTTP stream without thinking mode.")
-                                    retry_body = _without_thinking(chat_body)
-                                    async with client.stream(
-                                        "POST",
-                                        f"{_base_url}/chat/completions",
-                                        headers=headers,
-                                        json=retry_body,
-                                    ) as retry_resp:
-                                        if retry_resp.status_code == 200:
-                                            async for sse_data in parse_sse_stream(retry_resp):
-                                                events = translate_sse_chunk_to_ws_events(
-                                                    sse_data, turn_state, meta)
-                                                for event in events:
-                                                    yield _format_sse_event(event)
-                                            for event in finalize_ws_response_events(turn_state, meta):
-                                                yield _format_sse_event(event)
-                                            assistant_msg = build_assistant_from_state(turn_state)
-                                            stored = list(chat_body.get("messages", [])) + [assistant_msg]
-                                            session_store.set(response_id, stored)
-                                            session_store.cleanup()
-                                            logger.info(
-                                                f"POST /v1/responses → {meta['original_model']} "
-                                                "→ 200 (HTTP stream retry without thinking)"
-                                            )
-                                            return
-                                        retry_error = await retry_resp.aread()
-                                        error_body = retry_error.decode(errors="replace")[:1000]
-                                        logger.error(
-                                            f"DeepSeek HTTP stream retry {retry_resp.status_code}: {error_body}\n"
-                                            f"  → model={retry_body.get('model')}, "
-                                            f"msgs={len(retry_body.get('messages', []))}, "
-                                            f"keys={list(retry_body.keys())}"
-                                        )
                                 yield _format_sse_event({
                                     "type": "response.failed",
                                     "response": {
@@ -1220,11 +1273,8 @@ def create_app(model_map: dict[str, str] | None = None, base_url: str | None = N
                 )
                 if resp.status_code != 200:
                     error_text = resp.text[:1000]
-                    logger.error(
-                        f"DeepSeek HTTP {resp.status_code}: {error_text}\n"
-                        f"  → model={chat_body.get('model')}, "
-                        f"msgs={len(chat_body.get('messages', []))}, "
-                        f"keys={list(chat_body.keys())}"
+                    _log_deepseek_error(
+                        "DeepSeek HTTP", resp.status_code, error_text, chat_body
                     )
                     return JSONResponse(
                         status_code=502,
